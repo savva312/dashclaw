@@ -1,25 +1,27 @@
 import { Link, useParams } from "react-router-dom";
 import { useMemo, useState } from "react";
 import { useAppState } from "../../context";
-import { OfficeBreadcrumb } from "./OfficeBreadcrumb";
 import { AgentAvatar } from "./AgentAvatar";
 import { StatusChip } from "./Chips";
 import { SessionCard } from "./SessionCard";
-import { buildAgentStats } from "./utils";
+import {
+  buildAgentStats,
+  groupSessionsByKind,
+  kindLabel,
+  parseSessionKind,
+  sessionMatchesQuery,
+} from "./utils";
+import { Breadcrumb, EmptyState, SearchField, SegmentedControl } from "../../ui";
 
 type SessionFilter = "all" | "active" | "recent";
-
-const FILTERS: Array<{ id: SessionFilter; label: string }> = [
-  { id: "all", label: "All" },
-  { id: "active", label: "Live" },
-  { id: "recent", label: "24h" },
-];
 
 export function AgentSessionsView() {
   const { agentId: rawAgentId } = useParams();
   const agentId = rawAgentId ? decodeURIComponent(rawAgentId) : "";
   const { snapshot } = useAppState();
   const [filter, setFilter] = useState<SessionFilter>("all");
+  const [query, setQuery] = useState("");
+  const [kindFilter, setKindFilter] = useState<string>("all");
 
   const stats = useMemo(() => {
     if (!snapshot || !agentId) return null;
@@ -28,31 +30,56 @@ export function AgentSessionsView() {
     return buildAgentStats(snapshot, agent);
   }, [snapshot, agentId]);
 
+  const availableKinds = useMemo(() => {
+    if (!stats) return [];
+    return [...new Set(stats.sessions.map((s) => parseSessionKind(s.key)))].sort();
+  }, [stats]);
+
+  const sessions = useMemo(() => {
+    if (!stats) return [];
+    return stats.sessions.filter((session) => {
+      if (filter === "active" && !session.isActive) return false;
+      if (filter === "recent") {
+        const ms = Date.parse(session.updatedAt ?? session.lastInteractionAt ?? "");
+        if (Number.isNaN(ms) || Date.now() - ms >= 24 * 60 * 60_000) return false;
+      }
+      if (kindFilter !== "all" && parseSessionKind(session.key) !== kindFilter) return false;
+      return sessionMatchesQuery(session, query);
+    });
+  }, [stats, filter, kindFilter, query]);
+
+  const grouped = useMemo(() => {
+    const active = sessions.filter((s) => s.isActive);
+    const rest = sessions.filter((s) => !s.isActive);
+    const sections: Array<{ title: string; sessions: typeof sessions }> = [];
+    if (active.length > 0) sections.push({ title: "Live now", sessions: active });
+    for (const group of groupSessionsByKind(rest)) {
+      sections.push({ title: kindLabel(group.kind), sessions: group.sessions });
+    }
+    return sections.filter((section) => section.sessions.length > 0);
+  }, [sessions]);
+
   if (!snapshot) return <p className="office-loading">Loading…</p>;
   if (!stats) {
     return (
       <div className="office-page">
-        <OfficeBreadcrumb items={[{ label: "Agent Office", to: "/agents" }, { label: agentId || "Unknown" }]} />
-        <p className="badge error">Agent not found</p>
-        <Link className="office-back" to="/agents">← All agents</Link>
+        <Breadcrumb items={[{ label: "Agent Office", to: "/agents" }, { label: agentId || "Unknown" }]} />
+        <EmptyState title="Agent not found" hint="It may have been removed from the gateway config." />
+        <Link className="office-back" to="/agents">
+          ← All agents
+        </Link>
       </div>
     );
   }
-
-  const sessions = stats.sessions.filter((session) => {
-    if (filter === "active") return session.isActive;
-    if (filter === "recent") {
-      const ms = Date.parse(session.updatedAt ?? session.lastInteractionAt ?? "");
-      return !Number.isNaN(ms) && Date.now() - ms < 24 * 60 * 60_000;
-    }
-    return true;
-  });
 
   const primarySession = stats.activeSessions[0];
 
   return (
     <div className="office-page">
-      <OfficeBreadcrumb
+      <Link className="office-back" to="/agents">
+        ← All agents
+      </Link>
+      <Breadcrumb
         items={[
           { label: "Agent Office", to: "/agents" },
           { label: stats.agent.name ?? stats.agent.id },
@@ -88,28 +115,59 @@ export function AgentSessionsView() {
         </Link>
       ) : null}
 
-      <div className="office-toolbar">
-        <div className="segmented-control">
-          {FILTERS.map(({ id, label }) => (
-            <button
-              key={id}
-              type="button"
-              className={`segment ${filter === id ? "is-active" : ""}`}
-              onClick={() => setFilter(id)}
-            >
-              {label}
-            </button>
-          ))}
+      <div className="office-toolbar office-toolbar-stack">
+        <SearchField value={query} onChange={setQuery} placeholder="Search sessions…" />
+        <div className="office-toolbar-row">
+          <SegmentedControl
+            value={filter}
+            onChange={setFilter}
+            options={[
+              { value: "all", label: "All" },
+              { value: "active", label: "Live" },
+              { value: "recent", label: "24h" },
+            ]}
+          />
+          <span className="office-muted">{sessions.length} shown</span>
         </div>
-        <span className="office-muted">{sessions.length} shown</span>
+        {availableKinds.length > 1 ? (
+          <div className="kind-filter-row">
+            <button
+              type="button"
+              className={`kind-filter ${kindFilter === "all" ? "is-active" : ""}`}
+              onClick={() => setKindFilter("all")}
+            >
+              All types
+            </button>
+            {availableKinds.map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                className={`kind-filter kind-filter-${kind} ${kindFilter === kind ? "is-active" : ""}`}
+                onClick={() => setKindFilter(kind)}
+              >
+                {kindLabel(kind)}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
 
       {sessions.length === 0 ? (
-        <p className="empty">No sessions match this filter</p>
+        <EmptyState title="No sessions match" hint="Try another filter or search term." />
       ) : (
-        <div className="session-grid">
-          {sessions.map((session) => (
-            <SessionCard key={session.key} session={session} agentId={agentId} />
+        <div className="session-sections">
+          {grouped.map((section) => (
+            <section key={section.title} className="session-section">
+              <div className="section-head">
+                <h2>{section.title}</h2>
+                <span className="office-muted">{section.sessions.length}</span>
+              </div>
+              <div className="session-grid">
+                {section.sessions.map((session) => (
+                  <SessionCard key={session.key} session={session} agentId={agentId} />
+                ))}
+              </div>
+            </section>
           ))}
         </div>
       )}

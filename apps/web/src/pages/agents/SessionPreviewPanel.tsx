@@ -1,5 +1,9 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { fetchSessionPreview } from "../../api";
+import { runtimeKeys, RUNTIME_POLL_MS } from "../../queries";
+import { EmptyState, Skeleton } from "../../ui";
+import { formatPreviewText } from "./utils";
 
 interface PreviewItem {
   role?: string;
@@ -14,9 +18,32 @@ interface SessionPreviewData {
   }>;
 }
 
-function truncate(text: string, max = 1200): string {
+function truncate(text: string, max = 900): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max)}…`;
+}
+
+function PreviewBubble({ item }: { item: PreviewItem }) {
+  const [expanded, setExpanded] = useState(false);
+  const role = item.role ?? "unknown";
+  const formatted = formatPreviewText(item.text ?? "", role);
+  const long = formatted.length > 420;
+
+  return (
+    <div className={`preview-bubble role-${role}`}>
+      <div className="preview-bubble-head">
+        <span className="preview-bubble-role">{role}</span>
+      </div>
+      <div className={`preview-bubble-body ${expanded ? "is-expanded" : ""}`}>
+        <pre>{expanded ? formatted : truncate(formatted, 420)}</pre>
+      </div>
+      {long ? (
+        <button type="button" className="preview-expand" onClick={() => setExpanded((v) => !v)}>
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 export function SessionPreviewPanel({
@@ -26,55 +53,44 @@ export function SessionPreviewPanel({
   sessionKey: string;
   isActive?: boolean;
 }) {
-  const [preview, setPreview] = useState<SessionPreviewData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const previewQuery = useQuery({
+    queryKey: runtimeKeys.sessionPreview(sessionKey),
+    queryFn: () => fetchSessionPreview(sessionKey) as Promise<SessionPreviewData>,
+    refetchInterval: isActive ? RUNTIME_POLL_MS : false,
+  });
 
-  useEffect(() => {
-    let cancelled = false;
+  if (previewQuery.isLoading && !previewQuery.data) {
+    return <Skeleton lines={3} />;
+  }
 
-    const load = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const data = (await fetchSessionPreview(sessionKey)) as SessionPreviewData;
-        if (!cancelled) setPreview(data);
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load preview");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
+  if (previewQuery.error) {
+    return (
+      <p className="badge error">
+        {previewQuery.error instanceof Error ? previewQuery.error.message : "Failed to load preview"}
+      </p>
+    );
+  }
 
-    void load();
-    if (!isActive) return () => {
-      cancelled = true;
-    };
-
-    const timer = setInterval(() => {
-      void load();
-    }, 3_000);
-
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [sessionKey, isActive]);
-
-  if (loading && !preview) return <p className="empty">Loading conversation preview…</p>;
-  if (error) return <p className="badge error">{error}</p>;
-
-  const items = preview?.previews?.[0]?.items ?? [];
-  if (items.length === 0) return <p className="empty">No messages in preview yet.</p>;
+  const items = previewQuery.data?.previews?.[0]?.items ?? [];
+  if (items.length === 0) {
+    return (
+      <EmptyState
+        title="No messages yet"
+        hint="Conversation preview will appear when this session has activity."
+      />
+    );
+  }
 
   return (
-    <div className="session-preview-list">
-      {items.map((item, index) => (
-        <div key={`${item.role}-${index}`} className={`session-preview-item role-${item.role ?? "unknown"}`}>
-          <div className="session-preview-role">{item.role ?? "unknown"}</div>
-          <pre className="session-preview-text">{truncate(item.text ?? "")}</pre>
-        </div>
-      ))}
+    <div className="session-preview-panel">
+      {previewQuery.isFetching && !previewQuery.isLoading ? (
+        <span className="preview-refreshing">Updating…</span>
+      ) : null}
+      <div className="session-preview-list">
+        {items.map((item, index) => (
+          <PreviewBubble key={`${item.role}-${index}`} item={item} />
+        ))}
+      </div>
     </div>
   );
 }

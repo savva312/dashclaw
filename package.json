@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "pnpm --parallel --filter @dashclaw/server --filter @dashclaw/web dev",
     "build": "pnpm -r build",
+    "start": "pnpm build && pnpm --filter @dashclaw/server start",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "lint": "pnpm -r lint"

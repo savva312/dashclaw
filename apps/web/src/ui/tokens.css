@@ -1,0 +1,52 @@
+/* Dashclaw Clawdeck — custom ops UI tokens (not a generic component library) */
+
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@400;500;600;700&display=swap");
+
+:root {
+  --font-ui: "Sora", ui-sans-serif, system-ui, sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, monospace;
+
+  --void: #06080d;
+  --void-raised: #0b1018;
+  --void-panel: #0f1520;
+  --void-glass: rgba(15, 21, 32, 0.82);
+
+  --ink: #e8eef8;
+  --ink-muted: #8fa0ba;
+  --ink-faint: #5c6d86;
+
+  --line: #1e2a3d;
+  --line-strong: #2a3a52;
+
+  --claw: #2dd4bf;
+  --claw-dim: rgba(45, 212, 191, 0.12);
+  --claw-glow: rgba(45, 212, 191, 0.35);
+
+  --signal-live: #fbbf24;
+  --signal-live-dim: rgba(251, 191, 36, 0.14);
+
+  --signal-ok: #34d399;
+  --signal-warn: #f59e0b;
+  --signal-error: #f87171;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+
+  --shadow-panel: 0 16px 40px rgba(0, 0, 0, 0.35);
+  --shadow-live: 0 0 0 1px rgba(45, 212, 191, 0.18), 0 8px 28px rgba(45, 212, 191, 0.08);
+
+  /* Legacy aliases used across pages */
+  --bg: var(--void);
+  --bg-elevated: var(--void-raised);
+  --bg-panel: var(--void-panel);
+  --border: var(--line);
+  --text: var(--ink);
+  --text-muted: var(--ink-muted);
+  --accent: var(--claw);
+  --accent-dim: var(--claw-dim);
+  --success: var(--signal-ok);
+  --warn: var(--signal-warn);
+  --error: var(--signal-error);
+  --radius: var(--radius-md);
+}
