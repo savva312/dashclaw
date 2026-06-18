@@ -7,6 +7,7 @@ import {
   sessionDisplayName,
   sessionStatusLabel,
   sessionStatusTone,
+  shortSessionKey,
 } from "./utils";
 
 export function SessionCard({
@@ -35,7 +36,9 @@ export function SessionCard({
       </div>
 
       <h3 className="session-card-title">{sessionDisplayName(session)}</h3>
-      <p className="session-card-key mono">{session.key}</p>
+      <p className="session-card-key mono" title={session.key}>
+        {session.label ? shortSessionKey(session.key) : session.key}
+      </p>
 
       {session.currentTool ? (
         <div className="session-card-tool">

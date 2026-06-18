@@ -119,6 +119,72 @@ export function sessionDisplayName(session: SessionSummary): string {
   return session.label ?? shortSessionKey(session.key) ?? session.key;
 }
 
+export function matchesQuery(text: string, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return text.toLowerCase().includes(q);
+}
+
+export function sessionMatchesQuery(session: SessionSummary, query: string): boolean {
+  return matchesQuery(
+    [session.label, session.key, session.agentId, session.currentTool, session.status].filter(Boolean).join(" "),
+    query,
+  );
+}
+
+export function agentMatchesQuery(agent: AgentSummary, query: string): boolean {
+  return matchesQuery([agent.id, agent.name, agent.model, agent.runtime].filter(Boolean).join(" "), query);
+}
+
+export function groupSessionsByKind(sessions: SessionSummary[]): Array<{ kind: string; sessions: SessionSummary[] }> {
+  const order = ["discord", "subagent", "dashboard", "cron"];
+  const map = new Map<string, SessionSummary[]>();
+
+  for (const session of sessions) {
+    const kind = parseSessionKind(session.key);
+    const list = map.get(kind) ?? [];
+    list.push(session);
+    map.set(kind, list);
+  }
+
+  const known = order
+    .filter((kind) => map.has(kind))
+    .map((kind) => ({ kind, sessions: sortSessions(map.get(kind) ?? []) }));
+
+  const rest = [...map.entries()]
+    .filter(([kind]) => !order.includes(kind))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([kind, list]) => ({ kind, sessions: sortSessions(list) }));
+
+  return [...known, ...rest];
+}
+
+export function eventKindTone(kind: string): "ok" | "warn" | "neutral" | "error" | "accent" {
+  if (kind.includes("tool") || kind === "session.tool" || kind === "agent.tool") return "warn";
+  if (kind.includes("approval")) return "error";
+  if (kind === "session.message" || kind === "chat" || kind === "agent.assistant") return "accent";
+  if (kind.includes("lifecycle") || kind === "sessions.changed") return "ok";
+  return "neutral";
+}
+
+export function eventKindShort(kind: string): string {
+  return kind.replace("agent.", "").replace("session.", "").replace("gateway.", "");
+}
+
+export function formatPreviewText(text: string, role?: string): string {
+  const trimmed = text.trim();
+  if (role !== "tool" || !trimmed.startsWith("{")) return trimmed;
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    if (typeof parsed.status === "string") return `status: ${parsed.status}`;
+    if (typeof parsed.message === "string") return parsed.message;
+    if (typeof parsed.error === "string") return parsed.error;
+  } catch {
+    /* keep raw */
+  }
+  return trimmed;
+}
+
 export function formatRelativeTime(iso?: string): string {
   if (!iso) return "—";
   const ms = Date.parse(iso);

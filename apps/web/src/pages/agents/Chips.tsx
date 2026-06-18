@@ -1,8 +1,11 @@
-import { kindLabel } from "./utils";
+import { Badge } from "../../ui";
 
-export function KindChip({ kind }: { kind: string }) {
-  return <span className={`kind-chip kind-${kind}`}>{kindLabel(kind)}</span>;
-}
+const TONE_MAP = {
+  ok: "live",
+  neutral: "neutral",
+  warn: "warn",
+  error: "error",
+} as const;
 
 export function StatusChip({
   label,
@@ -14,9 +17,29 @@ export function StatusChip({
   pulse?: boolean;
 }) {
   return (
-    <span className={`status-chip tone-${tone}`}>
-      {pulse ? <span className="status-pulse" aria-hidden /> : null}
+    <Badge tone={TONE_MAP[tone]} pulse={pulse}>
       {label}
-    </span>
+    </Badge>
   );
+}
+
+export function KindChip({ kind }: { kind: string }) {
+  const tone =
+    kind === "discord" || kind === "subagent" || kind === "dashboard" || kind === "cron" ? "claw" : "neutral";
+  return <Badge tone={tone}>{kindLabel(kind)}</Badge>;
+}
+
+function kindLabel(kind: string): string {
+  switch (kind) {
+    case "discord":
+      return "Discord";
+    case "subagent":
+      return "Sub-agent";
+    case "dashboard":
+      return "Dashboard";
+    case "cron":
+      return "Cron";
+    default:
+      return kind;
+  }
 }

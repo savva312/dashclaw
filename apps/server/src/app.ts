@@ -1,6 +1,9 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { cors } from "hono/cors";
+import { serveStatic } from "@hono/node-server/serve-static";
 import type { RuntimeSnapshot, TimelineEvent } from "@dashclaw/runtime-model";
 import type { AdminService } from "./admin-service.js";
 import type { GatewayBridge } from "./gateway-bridge.js";
@@ -12,11 +15,15 @@ export interface AppContext {
   admin: AdminService;
 }
 
+export interface CreateAppOptions {
+  webDist?: string;
+}
+
 type SseClient = {
   push: (event: string, data: unknown) => void;
 };
 
-export function createApp(ctx: AppContext): Hono {
+export function createApp(ctx: AppContext, options: CreateAppOptions = {}): Hono {
   const app = new Hono();
   const sseClients = new Set<SseClient>();
 
@@ -33,7 +40,13 @@ export function createApp(ctx: AppContext): Hono {
   app.use(
     "*",
     cors({
-      origin: ["http://127.0.0.1:5173", "http://localhost:5173"],
+      origin: (origin) => {
+        if (!origin) return origin;
+        if (origin.startsWith("http://127.0.0.1:") || origin.startsWith("http://localhost:")) {
+          return origin;
+        }
+        return origin;
+      },
       allowHeaders: ["Authorization", "Content-Type"],
     }),
   );
@@ -59,6 +72,7 @@ export function createApp(ctx: AppContext): Hono {
       ok: true,
       service: "dashclaw",
       gateway: ctx.bridge.getConnectionState(),
+      ui: Boolean(options.webDist),
     }),
   );
 
@@ -141,5 +155,38 @@ export function createApp(ctx: AppContext): Hono {
     }),
   );
 
+  if (options.webDist) {
+    attachWebUi(app, options.webDist);
+  }
+
   return app;
+}
+
+function attachWebUi(app: Hono, webDist: string): void {
+  app.use("/assets/*", serveStatic({ root: webDist }));
+
+  app.get("*", (c) => {
+    if (c.req.path.startsWith("/api")) return c.notFound();
+
+    const relative = c.req.path === "/" ? "index.html" : c.req.path.slice(1);
+    const candidate = join(webDist, relative);
+    if (relative.includes(".") && existsSync(candidate)) {
+      const body = readFileSync(candidate);
+      const type = contentType(relative);
+      return c.body(body, 200, type ? { "Content-Type": type } : undefined);
+    }
+
+    const html = readFileSync(join(webDist, "index.html"), "utf8");
+    return c.html(html);
+  });
+}
+
+function contentType(path: string): string | undefined {
+  if (path.endsWith(".css")) return "text/css";
+  if (path.endsWith(".js")) return "application/javascript";
+  if (path.endsWith(".svg")) return "image/svg+xml";
+  if (path.endsWith(".ico")) return "image/x-icon";
+  if (path.endsWith(".png")) return "image/png";
+  if (path.endsWith(".woff2")) return "font/woff2";
+  return undefined;
 }

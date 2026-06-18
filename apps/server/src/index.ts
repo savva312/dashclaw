@@ -2,7 +2,7 @@ import { loadEnv } from "./load-env.js";
 
 loadEnv();
 
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { serve } from "@hono/node-server";
@@ -18,6 +18,8 @@ const GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN ?? process.env.OPENCLAW
 const DASHBOARD_TOKEN = process.env.DASHCLAW_TOKEN ?? randomUUID();
 const DB_PATH = process.env.DASHCLAW_DB ?? join(process.cwd(), "data", "dashclaw.db");
 const USE_FAKE = process.env.DASHCLAW_FAKE_GATEWAY === "1";
+const WEB_DIST = process.env.DASHCLAW_WEB_DIST ?? join(process.cwd(), "apps/web/dist");
+const SERVE_WEB = process.env.DASHCLAW_SERVE_WEB !== "0" && existsSync(join(WEB_DIST, "index.html"));
 
 async function main(): Promise<void> {
   mkdirSync(dirname(DB_PATH), { recursive: true });
@@ -46,12 +48,13 @@ async function main(): Promise<void> {
     dashboardToken: DASHBOARD_TOKEN,
   });
 
-  const app = createApp({ store, bridge, admin });
+  const app = createApp({ store, bridge, admin }, { webDist: SERVE_WEB ? WEB_DIST : undefined });
 
   serve({ fetch: app.fetch, port: PORT, hostname: BIND }, (info) => {
     console.log(`[dashclaw] server http://${info.address}:${info.port}`);
     console.log(`[dashclaw] dashboard token: ${DASHBOARD_TOKEN}`);
     console.log(`[dashclaw] gateway url: ${gatewayUrl}`);
+    if (SERVE_WEB) console.log(`[dashclaw] UI bundled at ${WEB_DIST}`);
   });
 
   try {

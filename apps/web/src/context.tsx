@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AuditLogEntry, RuntimeSnapshot, TimelineEvent } from "@dashclaw/runtime-model";
 import {
   clearToken,
@@ -11,6 +12,8 @@ import {
   setToken,
   subscribeEvents,
 } from "./api";
+import { RUNTIME_POLL_MS, TIMELINE_LIMIT, runtimeKeys } from "./queries";
+import { Badge, Button, Input, Panel } from "./ui";
 
 interface AppState {
   snapshot: RuntimeSnapshot | null;
@@ -37,18 +40,19 @@ function LoginScreen({
   message?: string;
 }) {
   return (
-    <div className="auth-screen">
-      <div className="card auth-card">
+    <div className="dc-auth-screen">
+      <Panel className="dc-auth-card">
+        <div className="dc-auth-mark">Clawdeck</div>
         <h1 className="page-title">Dashclaw Agent OS</h1>
-        <p style={{ color: "var(--text-muted)", margin: 0 }}>
+        <p style={{ color: "var(--ink-muted)", margin: 0 }}>
           Enter the dashboard token printed by the Dashclaw server on startup.
         </p>
         {message ? (
-          <p className="badge warn" style={{ marginTop: "1rem" }}>
-            {message}
+          <p style={{ marginTop: "1rem" }}>
+            <Badge tone="warn">{message}</Badge>
           </p>
         ) : null}
-        <input
+        <Input
           type="password"
           placeholder="Dashboard token"
           value={input}
@@ -56,11 +60,12 @@ function LoginScreen({
           onKeyDown={(e) => {
             if (e.key === "Enter" && input.trim()) onSubmit();
           }}
+          style={{ marginTop: "1rem", marginBottom: "0.85rem" }}
         />
-        <button className="btn primary" type="button" onClick={onSubmit} disabled={!input.trim()}>
+        <Button variant="primary" onClick={onSubmit} disabled={!input.trim()} style={{ width: "100%" }}>
           Connect
-        </button>
-      </div>
+        </Button>
+      </Panel>
     </div>
   );
 }
@@ -74,65 +79,97 @@ export function AppProvider({
   authToken: string;
   onUnauthorized: () => void;
 }) {
-  const [snapshot, setSnapshot] = useState<RuntimeSnapshot | null>(null);
-  const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
-  const [audit, setAudit] = useState<AuditLogEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [liveConnected, setLiveConnected] = useState(false);
 
-  const refresh = useCallback(async () => {
-    try {
-      setError(null);
-      const [s, t, a] = await Promise.all([fetchSnapshot(), fetchTimeline(), fetchAudit()]);
-      setSnapshot(s);
-      setTimeline(t);
-      setAudit(a);
-      setLoading(false);
-    } catch (err) {
-      if (isAuthError(err)) {
-        onUnauthorized();
-        return;
-      }
-      setError(err instanceof Error ? err.message : String(err));
-      setLoading(false);
+  const snapshotQuery = useQuery({
+    queryKey: runtimeKeys.snapshot(),
+    queryFn: fetchSnapshot,
+    refetchInterval: RUNTIME_POLL_MS,
+    retry: (count, err) => !isAuthError(err) && count < 2,
+  });
+
+  const timelineQuery = useQuery({
+    queryKey: runtimeKeys.timeline(TIMELINE_LIMIT),
+    queryFn: () => fetchTimeline(TIMELINE_LIMIT),
+    refetchInterval: RUNTIME_POLL_MS,
+    retry: (count, err) => !isAuthError(err) && count < 2,
+  });
+
+  const auditQuery = useQuery({
+    queryKey: runtimeKeys.audit(),
+    queryFn: async () => {
+      const data = await fetchAudit();
+      return data;
+    },
+    refetchInterval: RUNTIME_POLL_MS,
+    retry: (count, err) => !isAuthError(err) && count < 2,
+  });
+
+  useEffect(() => {
+    for (const err of [snapshotQuery.error, timelineQuery.error, auditQuery.error]) {
+      if (isAuthError(err)) onUnauthorized();
     }
-  }, [onUnauthorized]);
+  }, [snapshotQuery.error, timelineQuery.error, auditQuery.error, onUnauthorized]);
+
+  const refresh = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: runtimeKeys.snapshot() }),
+      queryClient.invalidateQueries({ queryKey: runtimeKeys.timeline(TIMELINE_LIMIT) }),
+      queryClient.invalidateQueries({ queryKey: runtimeKeys.audit() }),
+    ]);
+  }, [queryClient]);
 
   useEffect(() => {
     if (!authToken) return;
     setToken(authToken);
-    setLoading(true);
-    setSnapshot(null);
-    setTimeline([]);
-    setAudit([]);
     setLiveConnected(false);
     void refresh();
 
     const unsubAuth = registerUnauthorizedHandler(onUnauthorized);
 
     const unsub = subscribeEvents({
-      onSnapshot: (s) => {
+      onSnapshot: (snapshot) => {
         setLiveConnected(true);
-        setSnapshot(s);
+        queryClient.setQueryData(runtimeKeys.snapshot(), snapshot);
       },
-      onTimeline: (e) => setTimeline((prev) => [...prev.slice(-199), e]),
-      onAudit: setAudit,
+      onTimeline: (event) => {
+        queryClient.setQueryData(runtimeKeys.timeline(TIMELINE_LIMIT), (current: TimelineEvent[] | undefined) => {
+          const base = current ?? [];
+          return [...base.slice(-(TIMELINE_LIMIT - 1)), event];
+        });
+      },
+      onAudit: (entries) => {
+        queryClient.setQueryData(runtimeKeys.audit(), entries);
+      },
     });
-
-    const poll = setInterval(() => {
-      void refresh();
-    }, 3_000);
 
     return () => {
       unsubAuth();
       unsub();
-      clearInterval(poll);
     };
-  }, [authToken, onUnauthorized, refresh]);
+  }, [authToken, onUnauthorized, queryClient, refresh]);
+
+  const loading = snapshotQuery.isLoading && !snapshotQuery.data;
+  const error =
+    snapshotQuery.error && !isAuthError(snapshotQuery.error)
+      ? snapshotQuery.error instanceof Error
+        ? snapshotQuery.error.message
+        : String(snapshotQuery.error)
+      : null;
 
   return (
-    <AppContext.Provider value={{ snapshot, timeline, audit, loading, error, refresh, liveConnected }}>
+    <AppContext.Provider
+      value={{
+        snapshot: snapshotQuery.data ?? null,
+        timeline: timelineQuery.data ?? [],
+        audit: auditQuery.data ?? [],
+        loading,
+        error,
+        refresh,
+        liveConnected,
+      }}
+    >
       {children}
     </AppContext.Provider>
   );

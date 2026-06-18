@@ -16,7 +16,18 @@ pnpm --filter @dashclaw/server dev
 pnpm --filter @dashclaw/web dev
 ```
 
-Open http://localhost:5173. If `DASHCLAW_TOKEN` is set in `.env`, set `VITE_DASHCLAW_TOKEN` to the same value to skip the login screen in dev.
+Open http://localhost:5173 in **dev** (Vite + hot reload). If `DASHCLAW_TOKEN` is set in `.env`, set `VITE_DASHCLAW_TOKEN` to the same value to skip the login screen.
+
+### Production (single port)
+
+After building, the server serves the UI from the same port as the API:
+
+```bash
+pnpm start
+# open http://127.0.0.1:8090
+```
+
+Set `DASHCLAW_SERVE_WEB=0` to run API-only. Override UI path with `DASHCLAW_WEB_DIST`.
 
 ## Live OpenClaw integration
 
@@ -34,7 +45,7 @@ Ensure the Gateway is running (`openclaw gateway status`).
 ## Architecture
 
 - `apps/server` — Gateway bridge, SQLite runtime store, SSE API, admin RPC proxy
-- `apps/web` — Agent OS UI (Command Center, Timeline, Agents, Sessions, Tasks, Cron, Approvals, Admin)
+- `apps/web` — Agent OS UI built with **Clawdeck** (custom design system), TanStack Query, React Router
 - `packages/openclaw-gateway` — Gateway WebSocket client + fake gateway for tests
 - `packages/runtime-model` — shared types, RPC allowlists, redaction helpers
 
@@ -44,7 +55,8 @@ See [docs/openclaw-integration.md](docs/openclaw-integration.md) and [docs/admin
 
 | Command | Description |
 |---------|-------------|
-| `pnpm dev` | Run server + web in parallel |
+| `pnpm dev` | Run server + web in parallel (two ports) |
+| `pnpm start` | Build all packages and run server with bundled UI |
 | `pnpm build` | Build all packages |
 | `pnpm test` | Run unit/integration tests |
 | `pnpm typecheck` | Typecheck all packages |
@@ -62,6 +74,8 @@ Configuration lives in the **repo root** `.env` file (copy from `.env.example`).
 | `OPENCLAW_GATEWAY_URL` | `ws://127.0.0.1:18789` | Gateway WebSocket URL |
 | `OPENCLAW_GATEWAY_TOKEN` | — | Gateway auth token |
 | `DASHCLAW_FAKE_GATEWAY` | — | Set `1` to use in-process fake gateway |
+| `DASHCLAW_SERVE_WEB` | auto | Set `0` to disable bundled UI in production |
+| `DASHCLAW_WEB_DIST` | `apps/web/dist` | Path to built web assets |
 | `VITE_PORT` | `5173` | Web dev server port |
 | `VITE_DASHCLAW_API_URL` | `http://127.0.0.1:$DASHCLAW_PORT` | API proxy target for web dev |
 | `VITE_DASHCLAW_TOKEN` | — | Auto-fill dashboard token in browser (dev) |
