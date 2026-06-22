@@ -16,6 +16,7 @@ const BIND = process.env.DASHCLAW_BIND ?? "127.0.0.1";
 const GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL ?? "ws://127.0.0.1:18789";
 const GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN ?? process.env.OPENCLAW_GATEWAY_PASSWORD;
 const DASHBOARD_TOKEN = process.env.DASHCLAW_TOKEN ?? randomUUID();
+const DASHBOARD_TOKEN_FROM_ENV = Boolean(process.env.DASHCLAW_TOKEN);
 const DB_PATH = process.env.DASHCLAW_DB ?? join(process.cwd(), "data", "dashclaw.db");
 const USE_FAKE = process.env.DASHCLAW_FAKE_GATEWAY === "1";
 const WEB_DIST = process.env.DASHCLAW_WEB_DIST ?? join(process.cwd(), "apps/web/dist");
@@ -52,7 +53,10 @@ async function main(): Promise<void> {
 
   serve({ fetch: app.fetch, port: PORT, hostname: BIND }, (info) => {
     console.log(`[dashclaw] server http://${info.address}:${info.port}`);
-    console.log(`[dashclaw] dashboard token: ${DASHBOARD_TOKEN}`);
+    const tokenLog = DASHBOARD_TOKEN_FROM_ENV
+      ? `${DASHBOARD_TOKEN.slice(0, 8)}...`
+      : DASHBOARD_TOKEN;
+    console.log(`[dashclaw] dashboard token: ${tokenLog}`);
     console.log(`[dashclaw] gateway url: ${gatewayUrl}`);
     if (SERVE_WEB) console.log(`[dashclaw] UI bundled at ${WEB_DIST}`);
   });

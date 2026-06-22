@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { cors } from "hono/cors";
@@ -45,21 +45,28 @@ export function createApp(ctx: AppContext, options: CreateAppOptions = {}): Hono
         if (origin.startsWith("http://127.0.0.1:") || origin.startsWith("http://localhost:")) {
           return origin;
         }
-        return origin;
+        return null;
       },
       allowHeaders: ["Authorization", "Content-Type"],
     }),
   );
 
-  const requireAuth = async (
-    c: {
-      req: { header: (n: string) => string | undefined; query: (n: string) => string | undefined };
-      json: (b: unknown, s?: number) => Response;
-    },
-    next: () => Promise<void>,
-  ) => {
+  type AuthContext = {
+    req: { header: (n: string) => string | undefined; query: (n: string) => string | undefined };
+    json: (b: unknown, s?: number) => Response;
+  };
+
+  const requireAuth = async (c: AuthContext, next: () => Promise<void>) => {
+    if (!ctx.admin.validateAuth(c.req.header("Authorization"))) {
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+    await next();
+  };
+
+  const requireAuthForEvents = async (c: AuthContext, next: () => Promise<void>) => {
     const headerAuth = c.req.header("Authorization");
     const queryToken = c.req.query("token");
+    // EventSource cannot send Authorization headers in browsers; ?token= is scoped to SSE only.
     const authHeader = headerAuth ?? (queryToken ? `Bearer ${queryToken}` : undefined);
     if (!ctx.admin.validateAuth(authHeader)) {
       return c.json({ error: "Unauthorized" }, 401);
@@ -67,14 +74,7 @@ export function createApp(ctx: AppContext, options: CreateAppOptions = {}): Hono
     await next();
   };
 
-  app.get("/api/health", (c) =>
-    c.json({
-      ok: true,
-      service: "dashclaw",
-      gateway: ctx.bridge.getConnectionState(),
-      ui: Boolean(options.webDist),
-    }),
-  );
+  app.get("/api/health", (c) => c.json({ ok: true }));
 
   app.get("/api/snapshot", requireAuth, (c) => c.json(ctx.bridge.getSnapshot()));
 
@@ -128,7 +128,7 @@ export function createApp(ctx: AppContext, options: CreateAppOptions = {}): Hono
     }
   });
 
-  app.get("/api/events", requireAuth, (c) =>
+  app.get("/api/events", requireAuthForEvents, (c) =>
     streamSSE(c, async (stream) => {
       const client: SseClient = {
         push: (event, data) => {
@@ -162,21 +162,33 @@ export function createApp(ctx: AppContext, options: CreateAppOptions = {}): Hono
   return app;
 }
 
+function resolveWithinRoot(root: string, relativePath: string): string | null {
+  const rootResolved = resolve(root);
+  const candidate = resolve(rootResolved, relativePath);
+  const rel = relative(rootResolved, candidate);
+  if (rel.startsWith("..") || isAbsolute(rel)) return null;
+  return candidate;
+}
+
 function attachWebUi(app: Hono, webDist: string): void {
   app.use("/assets/*", serveStatic({ root: webDist }));
 
   app.get("*", (c) => {
     if (c.req.path.startsWith("/api")) return c.notFound();
 
-    const relative = c.req.path === "/" ? "index.html" : c.req.path.slice(1);
-    const candidate = join(webDist, relative);
-    if (relative.includes(".") && existsSync(candidate)) {
+    const relativePath = c.req.path === "/" ? "index.html" : c.req.path.slice(1);
+    const candidate = resolveWithinRoot(webDist, relativePath);
+    if (!candidate) return c.notFound();
+
+    if (relativePath.includes(".") && existsSync(candidate)) {
       const body = readFileSync(candidate);
-      const type = contentType(relative);
+      const type = contentType(relativePath);
       return c.body(body, 200, type ? { "Content-Type": type } : undefined);
     }
 
-    const html = readFileSync(join(webDist, "index.html"), "utf8");
+    const indexPath = resolveWithinRoot(webDist, "index.html");
+    if (!indexPath) return c.notFound();
+    const html = readFileSync(indexPath, "utf8");
     return c.html(html);
   });
 }
