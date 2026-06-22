@@ -8,5 +8,8 @@ dist/
 coverage/
 *.db
 *.db-journal
+data/
+docs/
+.serena/
 apps/web/dist/
 apps/server/data/

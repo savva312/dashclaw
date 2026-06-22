@@ -49,7 +49,35 @@ Ensure the Gateway is running (`openclaw gateway status`).
 - `packages/openclaw-gateway` — Gateway WebSocket client + fake gateway for tests
 - `packages/runtime-model` — shared types, RPC allowlists, redaction helpers
 
-See [docs/openclaw-integration.md](docs/openclaw-integration.md) and [docs/admin-safety.md](docs/admin-safety.md).
+## OpenClaw integration
+
+Dashclaw talks to OpenClaw over the **Gateway WebSocket protocol** (not by reading `~/.openclaw` files).
+
+1. Server opens `OPENCLAW_GATEWAY_URL` (default `ws://127.0.0.1:18789`).
+2. Gateway sends `connect.challenge`; server responds with operator auth.
+3. Gateway returns `hello-ok`; server polls RPCs and subscribes to pushed events.
+
+**Read RPCs (v0):** `health`, `agents.list`, `sessions.list`, `sessions.preview`, `tasks.list`, `cron.list`, `cron.runs`, `node.list`, `exec.approval.list`, `logs.tail`
+
+**Write RPCs (Admin Console):** `sessions.abort`, `cron.run`, `exec.approval.resolve`, `tools.invoke`, `config.set`, `gateway.restart.request`, and others in the allowlist.
+
+**Events:** `agent`, `session.message`, `session.operation`, `session.tool`, `sessions.changed`, `cron`, `health`, `presence`, `heartbeat`, `exec.approval.requested`, `exec.approval.resolved`, `shutdown`
+
+Gateway events are not replayed; on sequence gaps Dashclaw refreshes snapshot via RPC. Pin against your installed OpenClaw version and recheck the [Gateway protocol docs](https://docs.openclaw.ai/gateway/protocol) when upgrading.
+
+Set `DASHCLAW_FAKE_GATEWAY=1` to use an in-process mock Gateway without a live OpenClaw install.
+
+## Admin safety
+
+Admin-capable Gateway RPCs go through a guarded proxy:
+
+1. **Dashboard auth** — Bearer token (`DASHCLAW_TOKEN`) on all routes except `/api/health`.
+2. **RPC allowlist** — Only `READ_RPC_METHODS` / `WRITE_RPC_METHODS` are permitted.
+3. **High-risk confirmation** — `config.set`, `update.run`, `gateway.restart.request`, `tools.invoke`, etc. require a confirm token from `POST /api/admin/confirm`.
+4. **Audit log** — Mutating RPCs are persisted with actor, method, redacted params, and result summary.
+5. **Redaction** — Tokens, passwords, secrets, and large payloads are redacted before storage or UI display.
+
+Defaults: bind `127.0.0.1` only; gateway token stays server-side. Do not expose Dashclaw on public networks without TLS and stronger auth.
 
 ## Scripts
 
