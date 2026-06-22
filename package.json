@@ -3,6 +3,16 @@
   "private": true,
   "version": "0.1.0",
   "description": "Agent OS runtime cockpit for OpenClaw",
+  "license": "MIT",
+  "author": "Christos Savva",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/savva312/dashclaw.git"
+  },
+  "bugs": {
+    "url": "https://github.com/savva312/dashclaw/issues"
+  },
+  "homepage": "https://github.com/savva312/dashclaw#readme",
   "scripts": {
     "dev": "pnpm --parallel --filter @dashclaw/server --filter @dashclaw/web dev",
     "build": "pnpm -r build",

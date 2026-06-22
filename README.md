@@ -42,6 +42,29 @@ pnpm --filter @dashclaw/web dev
 
 Ensure the Gateway is running (`openclaw gateway status`).
 
+### Remote gateway (SSH port forward)
+
+If your OpenClaw Gateway runs on another machine, the easiest way to connect is to forward its port over SSH. Dashclaw defaults to `ws://127.0.0.1:18789`, so once the tunnel is up you can leave `OPENCLAW_GATEWAY_URL` unchanged.
+
+Add a host entry to `~/.ssh/config`:
+
+```
+Host openclaw
+  HostName <host>
+  User <user>
+  IdentityFile <path-to-key>
+  IdentitiesOnly yes
+  LocalForward 18789 127.0.0.1:18789
+```
+
+Open the tunnel:
+
+```bash
+ssh openclaw
+```
+
+With the SSH session running, start Dashclaw locally as usual. Traffic to `127.0.0.1:18789` is forwarded to the remote gateway. Set `OPENCLAW_GATEWAY_TOKEN` to the token from the remote host.
+
 ## Architecture
 
 - `apps/server` — Gateway bridge, SQLite runtime store, SSE API, admin RPC proxy
@@ -110,4 +133,4 @@ Configuration lives in the **repo root** `.env` file (copy from `.env.example`).
 
 ## License
 
-MIT
+[MIT](LICENSE)
