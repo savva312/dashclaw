@@ -318,6 +318,7 @@ describe("dashboard selectors", () => {
             agentId: "agent-a",
             label: "Subagent child",
             isActive: true,
+            parentSessionKey: "agent:agent-a:discord:channel:root",
             currentTool: "pnpm test",
             updatedAt: "2026-06-22T11:59:30.000Z",
           },
@@ -365,16 +366,7 @@ describe("dashboard selectors", () => {
           },
         ],
       }),
-      [
-        {
-          id: "event-parent-link",
-          kind: "session.operation",
-          timestamp: "2026-06-22T11:59:35.000Z",
-          title: "Spawn subagent",
-          sessionKey: "agent:agent-a:subagent:child-1",
-          payload: { parentSessionKey: "agent:agent-a:discord:channel:root" },
-        },
-      ],
+      [],
       { nowMs: now },
     );
 

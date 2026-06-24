@@ -416,6 +416,9 @@ function normalizeSession(raw: unknown): SessionSummary {
   return {
     key,
     agentId,
+    parentSessionKey: pickString(s, "parentSessionKey"),
+    spawnedBy: pickString(s, "spawnedBy"),
+    ownerSessionKey: pickString(s, "ownerSessionKey"),
     label: pickString(s, "label", "displayName", "name"),
     model: pickString(s, "model"),
     agentRuntime: pickString(s, "agentRuntime"),
