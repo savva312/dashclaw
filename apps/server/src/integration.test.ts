@@ -39,6 +39,24 @@ describe("server integration", () => {
     expect(snapshot.tasks.some((t) => t.status === "running")).toBe(true);
   });
 
+  it("preserves fake gateway degraded state in snapshots", async () => {
+    fake = await startFakeGateway({ token: "test-token", scenario: "degraded" });
+    store = new RuntimeStore(join(tmpdir(), `dashclaw-${randomUUID()}.db`));
+
+    bridge = new GatewayBridge({
+      url: fake.url,
+      token: "test-token",
+      store,
+    });
+
+    await bridge.start();
+    const degraded = await bridge.refreshSnapshot();
+
+    expect(degraded.health?.degraded).toBe(true);
+    expect(degraded.failedTaskCount).toBeGreaterThan(0);
+    expect(degraded.tasks.some((task) => task.id === "task-delivery-lost")).toBe(true);
+  });
+
   it("audits admin RPC calls", async () => {
     fake = await startFakeGateway({ token: "test-token" });
     store = new RuntimeStore(join(tmpdir(), `dashclaw-${randomUUID()}.db`));
