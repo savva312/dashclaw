@@ -3,7 +3,14 @@ import { useAppState, useLogout } from "../context";
 import { Button, LiveIndicator } from "../ui";
 
 const NAV = [
-  { section: "Ops", items: [{ to: "/", label: "Command Center", end: true }, { to: "/timeline", label: "Live Timeline" }] },
+  {
+    section: "Ops",
+    items: [
+      { to: "/", label: "Command Center", end: true },
+      { to: "/timeline", label: "Live Timeline" },
+      { to: "/graph", label: "Work Graph" },
+    ],
+  },
   {
     section: "Runtime",
     items: [

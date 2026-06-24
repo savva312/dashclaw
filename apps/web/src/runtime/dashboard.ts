@@ -315,7 +315,7 @@ export function buildWorkGraphModel(
 
   for (const session of snapshot.sessions) {
     const role = workRoleForSession(session);
-    const parentSessionKey = sessionParentHints.get(session.key);
+    const parentSessionKey = session.parentSessionKey ?? session.spawnedBy ?? session.ownerSessionKey ?? sessionParentHints.get(session.key);
     const parentId =
       parentSessionKey && parentSessionKey !== session.key && sessionsByKey.has(parentSessionKey)
         ? `session:${parentSessionKey}`
