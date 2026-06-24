@@ -47,6 +47,29 @@ describe("GatewayClient", () => {
     client.disconnect();
   });
 
+  it("serves repeatable approval-heavy scenario fixtures", async () => {
+    fake = await startFakeGateway({ token: "test-token", scenario: "approval-heavy" });
+    const client = new GatewayClient({
+      url: fake.url,
+      token: "test-token",
+      reconnect: false,
+      WebSocketImpl: WebSocket as unknown as typeof globalThis.WebSocket,
+    });
+    await client.connect();
+
+    const approvals = await client.call<{ approvals: Array<{ id: string; status: string }> }>("exec.approval.list");
+    expect(approvals.approvals).toHaveLength(3);
+    expect(approvals.approvals.every((approval) => approval.status === "pending")).toBe(true);
+
+    const resolved = await client.call<{ approval: { id: string; status: string } }>("exec.approval.resolve", {
+      id: "approval-restart",
+      decision: "approved",
+    });
+    expect(resolved.approval).toMatchObject({ id: "approval-restart", status: "approved" });
+
+    client.disconnect();
+  });
+
   it("receives pushed events", async () => {
     fake = await startFakeGateway({ token: "test-token" });
     const client = new GatewayClient({

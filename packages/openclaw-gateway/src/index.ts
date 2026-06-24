@@ -1,5 +1,11 @@
 export { GatewayClient } from "./client.js";
-export { startFakeGateway, type FakeGatewayHandle, type FakeGatewayOptions } from "./fake-gateway.js";
+export {
+  FAKE_GATEWAY_SCENARIOS,
+  startFakeGateway,
+  type FakeGatewayHandle,
+  type FakeGatewayOptions,
+  type FakeGatewayScenario,
+} from "./fake-gateway.js";
 export type {
   GatewayClientEvents,
   GatewayClientOptions,

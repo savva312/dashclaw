@@ -1,4 +1,11 @@
 import { useAppState } from "../context";
+import {
+  buildDashboardModel,
+  type AttentionTone,
+  type WorkGraphModel,
+  type WorkGraphNode,
+  type WorkGraphStatus,
+} from "../runtime/dashboard";
 
 function formatUptime(ms?: number): string {
   if (!ms) return "—";
@@ -9,13 +16,14 @@ function formatUptime(ms?: number): string {
 }
 
 export function CommandCenterPage() {
-  const { snapshot, loading, error, refresh } = useAppState();
+  const { snapshot, timeline, loading, error, refresh } = useAppState();
 
   if (loading && !snapshot) return <p>Loading…</p>;
   if (error) return <p className="badge error">{error}</p>;
   if (!snapshot) return <p>Loading…</p>;
 
   const s = snapshot!;
+  const model = buildDashboardModel(s, timeline);
 
   return (
     <>
@@ -23,6 +31,8 @@ export function CommandCenterPage() {
         <h1 className="page-title">Command Center</h1>
         <button className="btn" type="button" onClick={() => void refresh()}>Refresh</button>
       </div>
+
+      <InterventionCard model={model.interventionSummary} />
 
       <div className="grid grid-4" style={{ marginBottom: "1.5rem" }}>
         <div className="card">
@@ -53,6 +63,8 @@ export function CommandCenterPage() {
           <div className="stat-label">failed or timed out</div>
         </div>
       </div>
+
+      <WorkGraphCard graph={model.workGraph} />
 
       <div className="grid grid-2">
         <div className="card">
@@ -100,4 +112,127 @@ export function CommandCenterPage() {
       </div>
     </>
   );
+}
+
+function InterventionCard({ model }: { model: ReturnType<typeof buildDashboardModel>["interventionSummary"] }) {
+  return (
+    <div className="card" style={{ marginBottom: "1.5rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "flex-start" }}>
+        <div>
+          <h3>Intervention / Access / Security</h3>
+          <p className="stat-label" style={{ marginTop: "0.35rem" }}>
+            Unified read-only view of runtime items that may need operator attention.
+          </p>
+        </div>
+        <span className={`badge ${badgeClassForTone(model.tone)}`}>{model.headline}</span>
+      </div>
+      <div className="grid grid-4" style={{ marginTop: "1rem", marginBottom: "1rem" }}>
+        <div>
+          <div className="stat-value">{model.counts.total}</div>
+          <div className="stat-label">total items</div>
+        </div>
+        <div>
+          <div className="stat-value">{model.counts.intervention}</div>
+          <div className="stat-label">intervention</div>
+        </div>
+        <div>
+          <div className="stat-value">{model.counts.access}</div>
+          <div className="stat-label">access</div>
+        </div>
+        <div>
+          <div className="stat-value">{model.counts.security}</div>
+          <div className="stat-label">security</div>
+        </div>
+      </div>
+      {model.items.length === 0 ? (
+        <p className="empty">No failed, stale, disconnected, approval, or posture warnings detected.</p>
+      ) : (
+        <table className="table">
+          <thead>
+            <tr><th>Priority</th><th>Category</th><th>Item</th><th>When</th></tr>
+          </thead>
+          <tbody>
+            {model.items.slice(0, 8).map((item) => (
+              <tr key={item.id}>
+                <td><span className={`badge ${badgeClassForTone(item.tone)}`}>{item.tone}</span></td>
+                <td>{item.category}</td>
+                <td>
+                  {item.links.task ? <a href={item.links.task}>{item.title}</a> : item.links.approval ? <a href={item.links.approval}>{item.title}</a> : item.title}
+                  {item.summary ? <div className="stat-label">{item.summary}</div> : null}
+                </td>
+                <td>{item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function WorkGraphCard({ graph }: { graph: WorkGraphModel }) {
+  const roots = graph.roots.filter((node) => node.kind === "agent" || node.children.length > 0).slice(0, 8);
+
+  return (
+    <div className="card" style={{ marginBottom: "1.5rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "baseline" }}>
+        <h3>Live work graph</h3>
+        <div className="stat-label">
+          {graph.summary.active} active · {graph.summary.failed} failed · {graph.summary.lost} lost
+        </div>
+      </div>
+      {roots.length === 0 ? (
+        <p className="empty">No live agent work reported</p>
+      ) : (
+        <div style={{ display: "grid", gap: "0.65rem" }}>
+          {roots.map((node) => (
+            <WorkGraphNodeRow key={node.id} node={node} depth={0} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WorkGraphNodeRow({ node, depth }: { node: WorkGraphNode; depth: number }) {
+  return (
+    <div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "0.65rem",
+          paddingLeft: `${depth * 1.25}rem`,
+        }}
+      >
+        <span className={`badge ${badgeClassForStatus(node.status)}`}>{node.status}</span>
+        <span className="mono" style={{ color: "var(--ink-muted)", minWidth: "5.5rem" }}>
+          {node.role}
+        </span>
+        <strong>{node.label}</strong>
+        {node.currentTool ? <span className="stat-label">· {node.currentTool}</span> : null}
+      </div>
+      {node.children.length > 0 ? (
+        <div style={{ display: "grid", gap: "0.4rem", marginTop: "0.4rem" }}>
+          {node.children.slice(0, 8).map((child) => (
+            <WorkGraphNodeRow key={child.id} node={child} depth={depth + 1} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function badgeClassForStatus(status: WorkGraphStatus): "ok" | "error" | "warn" | "neutral" {
+  if (status === "failed" || status === "lost") return "error";
+  if (status === "active" || status === "running" || status === "scheduled") return "ok";
+  if (status === "queued") return "warn";
+  return "neutral";
+}
+
+function badgeClassForTone(tone: AttentionTone | "ok"): "ok" | "error" | "warn" | "neutral" {
+  if (tone === "error") return "error";
+  if (tone === "warn") return "warn";
+  if (tone === "ok") return "ok";
+  return "neutral";
 }

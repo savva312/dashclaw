@@ -217,6 +217,7 @@ export class GatewayBridge {
               ok: Boolean(health.ok ?? true),
               uptimeMs: typeof health.uptimeMs === "number" ? health.uptimeMs : undefined,
               version: typeof health.version === "string" ? health.version : undefined,
+              degraded: health.degraded === true,
               raw: redactValue(health) as Record<string, unknown>,
             }
           : null,
