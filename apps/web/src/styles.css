@@ -1660,17 +1660,26 @@ textarea {
   width: 100%;
   height: min(72vh, 760px);
   min-height: 520px;
-  overflow: auto;
+  overflow: hidden;
   background:
     radial-gradient(circle at 32px 32px, rgba(45, 212, 191, 0.10) 1px, transparent 1px),
     linear-gradient(135deg, rgba(45, 212, 191, 0.05), transparent 36%),
     var(--bg-panel);
   background-size: 32px 32px, auto, auto;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.work-graph-scroll.is-panning {
+  cursor: grabbing;
 }
 
 .work-graph-svg {
   display: block;
   min-width: 100%;
+  transform-origin: 0 0;
+  will-change: transform;
 }
 
 .work-graph-edge {

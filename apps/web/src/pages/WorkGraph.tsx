@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, type PointerEvent, type WheelEvent } from "react";
 import { Link } from "react-router-dom";
 import { useAppState } from "../context";
 import {
@@ -42,7 +42,11 @@ export function WorkGraphPage() {
   const { snapshot, timeline, loading, error, refresh } = useAppState();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(0.92);
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
   const [query, setQuery] = useState("");
 
   const model = useMemo(() => (snapshot ? buildDashboardModel(snapshot, timeline) : null), [snapshot, timeline]);
@@ -53,6 +57,58 @@ export function WorkGraphPage() {
   );
   const layout = useMemo(() => (visibleGraph ? layoutGraph(visibleGraph) : null), [visibleGraph]);
   const selectedNode = selectedId ? graph?.nodes.find((node) => node.id === selectedId) : undefined;
+
+  const resetView = () => {
+    setZoom(0.92);
+    setPan({ x: 0, y: 0 });
+  };
+
+  const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    if (target.closest("button,a,input,select,textarea")) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: pan.x,
+      originY: pan.y,
+    };
+    setIsPanning(true);
+  };
+
+  const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    setPan({
+      x: drag.originX + event.clientX - drag.startX,
+      y: drag.originY + event.clientY - drag.startY,
+    });
+  };
+
+  const stopPanning = (event: PointerEvent<HTMLDivElement>) => {
+    if (dragRef.current?.pointerId === event.pointerId) {
+      dragRef.current = null;
+      setIsPanning(false);
+    }
+  };
+
+  const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const nextZoom = clampZoom(zoom * Math.exp(-event.deltaY * 0.001));
+    const mouseX = event.clientX - rect.left;
+    const mouseY = event.clientY - rect.top;
+    const worldX = (mouseX - pan.x) / zoom;
+    const worldY = (mouseY - pan.y) / zoom;
+    setZoom(nextZoom);
+    setPan({
+      x: mouseX - worldX * nextZoom,
+      y: mouseY - worldY * nextZoom,
+    });
+  };
 
   if (loading && !snapshot) return <p>Loading…</p>;
   if (error) return <p className="badge error">{error}</p>;
@@ -83,6 +139,9 @@ export function WorkGraphPage() {
           />
           <button className="btn" type="button" onClick={() => setZoom((value) => clampZoom(value + 0.12))}>
             +
+          </button>
+          <button className="btn" type="button" onClick={resetView}>
+            Reset view
           </button>
           <button className="btn" type="button" onClick={() => void refresh()}>
             Refresh
@@ -120,7 +179,7 @@ export function WorkGraphPage() {
           ))}
         </div>
         <div className="stat-label work-graph-toolbar-note">
-          Showing {visibleGraph.nodes.length} of {graph.nodes.length} nodes · click a node to inspect and jump in.
+          Showing {visibleGraph.nodes.length} of {graph.nodes.length} nodes · drag to pan · scroll to zoom · click a node to inspect.
         </div>
       </div>
 
@@ -129,14 +188,23 @@ export function WorkGraphPage() {
           {layout.nodes.length === 0 ? (
             <p className="empty">No graph nodes match this filter.</p>
           ) : (
-            <div className="work-graph-scroll">
+            <div
+              ref={viewportRef}
+              className={`work-graph-scroll ${isPanning ? "is-panning" : ""}`}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={stopPanning}
+              onPointerCancel={stopPanning}
+              onWheel={handleWheel}
+            >
               <svg
                 className="work-graph-svg"
-                width={Math.max(layout.width * zoom, 760)}
-                height={Math.max(layout.height * zoom, 420)}
+                width={Math.max(layout.width, 760)}
+                height={Math.max(layout.height, 420)}
                 viewBox={`0 0 ${layout.width} ${layout.height}`}
                 role="img"
                 aria-label="Live work graph"
+                style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
               >
                 <defs>
                   <marker id="work-graph-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
@@ -385,6 +453,7 @@ function filterGraph(graph: WorkGraphModel, statusFilter: StatusFilter, query: s
       active: nodes.filter((node) => isActiveStatus(node.status)).length,
       failed: nodes.filter((node) => node.status === "failed").length,
       lost: nodes.filter((node) => node.status === "lost").length,
+      hiddenInactive: graph.nodes.filter((node) => !includeIds.has(node.id) && !isActiveStatus(node.status)).length,
     },
   };
 }
@@ -428,7 +497,7 @@ function matchesQuery(node: WorkGraphNode, query: string): boolean {
 }
 
 function isActiveStatus(status: WorkGraphStatus): boolean {
-  return status === "active" || status === "running" || status === "queued" || status === "scheduled";
+  return status === "active" || status === "running" || status === "queued";
 }
 
 function badgeClassForStatus(status: WorkGraphStatus): "ok" | "error" | "warn" | "neutral" {
@@ -439,7 +508,7 @@ function badgeClassForStatus(status: WorkGraphStatus): "ok" | "error" | "warn" |
 }
 
 function clampZoom(value: number): number {
-  return Math.min(1.6, Math.max(0.45, Number(value.toFixed(2))));
+  return Math.min(2.25, Math.max(0.45, Number(value.toFixed(2))));
 }
 
 function formatTime(iso?: string): string | undefined {
