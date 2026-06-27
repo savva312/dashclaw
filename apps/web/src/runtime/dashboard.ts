@@ -102,6 +102,7 @@ export interface WorkGraphModel {
     active: number;
     failed: number;
     lost: number;
+    hiddenInactive: number;
   };
 }
 
@@ -288,7 +289,11 @@ export function buildWorkGraphModel(
 
   for (const agent of snapshot.agents) {
     const hasActiveWork =
-      snapshot.sessions.some((session) => session.agentId === agent.id && session.isActive) ||
+      snapshot.sessions.some(
+        (session) =>
+          session.agentId === agent.id &&
+          isActiveWorkGraphStatus(workStatusForSession(session, nowMs, activeSessionStaleAfterMs)),
+      ) ||
       snapshot.tasks.some((task) => task.agentId === agent.id && (task.status === "running" || task.status === "queued"));
     const hasFailedWork = snapshot.tasks.some(
       (task) => task.agentId === agent.id && (task.status === "failed" || task.status === "timed_out"),
@@ -411,6 +416,7 @@ export function buildWorkGraphModel(
       active: childNodes.filter((node) => isActiveWorkGraphStatus(node.status)).length,
       failed: childNodes.filter((node) => node.status === "failed").length,
       lost: childNodes.filter((node) => node.status === "lost").length,
+      hiddenInactive: childNodes.filter((node) => !isActiveWorkGraphStatus(node.status)).length,
     },
   };
 }
@@ -798,14 +804,15 @@ function workStatusForSession(
   nowMs: number,
   activeSessionStaleAfterMs: number,
 ): WorkGraphStatus {
-  if (session.status === "failed") return "failed";
-  if (session.status === "timeout" || session.status === "timed_out") return "lost";
+  const status = normalizeWorkStatusText(session.status);
+  if (status === "failed") return "failed";
+  if (status === "lost") return "lost";
+  if (status === "completed") return "completed";
   if (session.isActive && isOlderThan(session.updatedAt ?? session.lastInteractionAt, nowMs, activeSessionStaleAfterMs)) {
     return "lost";
   }
-  if (session.status === "queued") return "queued";
-  if (session.status === "running" || session.isActive) return "active";
-  if (session.status === "completed" || session.status === "done") return "completed";
+  if (status === "queued") return "queued";
+  if (status === "running" || session.isActive || session.currentRunId) return "active";
   return "idle";
 }
 
@@ -864,7 +871,29 @@ function rankWorkGraphStatus(status: WorkGraphStatus): number {
 }
 
 function isActiveWorkGraphStatus(status: WorkGraphStatus): boolean {
-  return status === "active" || status === "running" || status === "queued" || status === "scheduled";
+  return status === "active" || status === "running" || status === "queued";
+}
+
+function normalizeWorkStatusText(status: string | undefined): "running" | "queued" | "completed" | "failed" | "lost" | undefined {
+  if (!status) return undefined;
+  const normalized = status.toLowerCase().replace(/[ -]/g, "_");
+  if (normalized === "running" || normalized === "active" || normalized === "processing" || normalized === "streaming") {
+    return "running";
+  }
+  if (normalized === "queued" || normalized === "pending") return "queued";
+  if (
+    normalized === "completed" ||
+    normalized === "complete" ||
+    normalized === "done" ||
+    normalized === "final" ||
+    normalized === "success" ||
+    normalized === "succeeded"
+  ) {
+    return "completed";
+  }
+  if (normalized === "failed" || normalized === "failure" || normalized === "error") return "failed";
+  if (normalized === "timeout" || normalized === "timed_out" || normalized === "lost" || normalized === "stale") return "lost";
+  return undefined;
 }
 
 function sessionKind(key: string): string {
