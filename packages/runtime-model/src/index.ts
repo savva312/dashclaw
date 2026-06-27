@@ -53,6 +53,9 @@ export interface AgentSummary {
 export interface SessionSummary {
   key: string;
   agentId?: string;
+  parentSessionKey?: string;
+  spawnedBy?: string;
+  ownerSessionKey?: string;
   label?: string;
   model?: string;
   agentRuntime?: string;

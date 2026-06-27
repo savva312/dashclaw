@@ -1,6 +1,11 @@
-import { useRef, useState, type PointerEvent, type WheelEvent } from "react";
 import { useAppState } from "../context";
-import { buildDashboardModel, type WorkGraphModel, type WorkGraphNode, type WorkGraphStatus } from "../runtime/dashboard";
+import {
+  buildDashboardModel,
+  type AttentionTone,
+  type WorkGraphModel,
+  type WorkGraphNode,
+  type WorkGraphStatus,
+} from "../runtime/dashboard";
 
 function formatUptime(ms?: number): string {
   if (!ms) return "—";
@@ -26,6 +31,8 @@ export function CommandCenterPage() {
         <h1 className="page-title">Command Center</h1>
         <button className="btn" type="button" onClick={() => void refresh()}>Refresh</button>
       </div>
+
+      <InterventionCard model={model.interventionSummary} />
 
       <div className="grid grid-4" style={{ marginBottom: "1.5rem" }}>
         <div className="card">
@@ -107,97 +114,80 @@ export function CommandCenterPage() {
   );
 }
 
+function InterventionCard({ model }: { model: ReturnType<typeof buildDashboardModel>["interventionSummary"] }) {
+  return (
+    <div className="card" style={{ marginBottom: "1.5rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "flex-start" }}>
+        <div>
+          <h3>Intervention / Access / Security</h3>
+          <p className="stat-label" style={{ marginTop: "0.35rem" }}>
+            Unified read-only view of runtime items that may need operator attention.
+          </p>
+        </div>
+        <span className={`badge ${badgeClassForTone(model.tone)}`}>{model.headline}</span>
+      </div>
+      <div className="grid grid-4" style={{ marginTop: "1rem", marginBottom: "1rem" }}>
+        <div>
+          <div className="stat-value">{model.counts.total}</div>
+          <div className="stat-label">total items</div>
+        </div>
+        <div>
+          <div className="stat-value">{model.counts.intervention}</div>
+          <div className="stat-label">intervention</div>
+        </div>
+        <div>
+          <div className="stat-value">{model.counts.access}</div>
+          <div className="stat-label">access</div>
+        </div>
+        <div>
+          <div className="stat-value">{model.counts.security}</div>
+          <div className="stat-label">security</div>
+        </div>
+      </div>
+      {model.items.length === 0 ? (
+        <p className="empty">No failed, stale, disconnected, approval, or posture warnings detected.</p>
+      ) : (
+        <table className="table">
+          <thead>
+            <tr><th>Priority</th><th>Category</th><th>Item</th><th>When</th></tr>
+          </thead>
+          <tbody>
+            {model.items.slice(0, 8).map((item) => (
+              <tr key={item.id}>
+                <td><span className={`badge ${badgeClassForTone(item.tone)}`}>{item.tone}</span></td>
+                <td>{item.category}</td>
+                <td>
+                  {item.links.task ? <a href={item.links.task}>{item.title}</a> : item.links.approval ? <a href={item.links.approval}>{item.title}</a> : item.title}
+                  {item.summary ? <div className="stat-label">{item.summary}</div> : null}
+                </td>
+                <td>{item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 function WorkGraphCard({ graph }: { graph: WorkGraphModel }) {
   const roots = graph.roots.filter((node) => node.kind === "agent" || node.children.length > 0).slice(0, 8);
-  const viewportRef = useRef<HTMLDivElement | null>(null);
-  const dragRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
-  const [view, setView] = useState({ x: 0, y: 0, zoom: 1 });
-  const [isPanning, setIsPanning] = useState(false);
-
-  const resetView = () => setView({ x: 0, y: 0, zoom: 1 });
-
-  const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    const target = event.target as HTMLElement;
-    if (target.closest("button,a,input,select,textarea")) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    dragRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      originX: view.x,
-      originY: view.y,
-    };
-    setIsPanning(true);
-  };
-
-  const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId) return;
-    setView((current) => ({
-      ...current,
-      x: drag.originX + event.clientX - drag.startX,
-      y: drag.originY + event.clientY - drag.startY,
-    }));
-  };
-
-  const stopPanning = (event: PointerEvent<HTMLDivElement>) => {
-    if (dragRef.current?.pointerId === event.pointerId) {
-      dragRef.current = null;
-      setIsPanning(false);
-    }
-  };
-
-  const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const rect = viewportRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const nextZoom = clamp(view.zoom * Math.exp(-event.deltaY * 0.001), 0.5, 2.25);
-    const mouseX = event.clientX - rect.left;
-    const mouseY = event.clientY - rect.top;
-    const worldX = (mouseX - view.x) / view.zoom;
-    const worldY = (mouseY - view.y) / view.zoom;
-    setView({
-      zoom: nextZoom,
-      x: mouseX - worldX * nextZoom,
-      y: mouseY - worldY * nextZoom,
-    });
-  };
 
   return (
     <div className="card" style={{ marginBottom: "1.5rem" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "baseline" }}>
         <h3>Live work graph</h3>
         <div className="stat-label">
-          {graph.summary.active} active now · {graph.summary.hiddenInactive} hidden inactive
+          {graph.summary.active} active · {graph.summary.failed} failed · {graph.summary.lost} lost
         </div>
       </div>
       {roots.length === 0 ? (
-        <p className="empty">No active agent work right now</p>
+        <p className="empty">No live agent work reported</p>
       ) : (
-        <div>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "center", marginBottom: "0.65rem" }}>
-            <span className="stat-label">Drag to pan · scroll to zoom · {Math.round(view.zoom * 100)}%</span>
-            <button className="btn small" type="button" onClick={resetView}>Reset view</button>
-          </div>
-          <div
-            ref={viewportRef}
-            className={`work-graph-viewport ${isPanning ? "is-panning" : ""}`}
-            onPointerDown={handlePointerDown}
-            onPointerMove={handlePointerMove}
-            onPointerUp={stopPanning}
-            onPointerCancel={stopPanning}
-            onWheel={handleWheel}
-          >
-            <div
-              className="work-graph-canvas"
-              style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})` }}
-            >
-              {roots.map((node) => (
-                <WorkGraphNodeRow key={node.id} node={node} depth={0} />
-              ))}
-            </div>
-          </div>
+        <div style={{ display: "grid", gap: "0.65rem" }}>
+          {roots.map((node) => (
+            <WorkGraphNodeRow key={node.id} node={node} depth={0} />
+          ))}
         </div>
       )}
     </div>
@@ -240,6 +230,9 @@ function badgeClassForStatus(status: WorkGraphStatus): "ok" | "error" | "warn" |
   return "neutral";
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
+function badgeClassForTone(tone: AttentionTone | "ok"): "ok" | "error" | "warn" | "neutral" {
+  if (tone === "error") return "error";
+  if (tone === "warn") return "warn";
+  if (tone === "ok") return "ok";
+  return "neutral";
 }

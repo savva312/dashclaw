@@ -9,12 +9,16 @@ import type {
 } from "@dashclaw/runtime-model";
 
 export type AttentionTone = "error" | "warn" | "info";
+export type AttentionCategory = "intervention" | "access" | "security";
 export type AttentionKind =
   | "gateway"
   | "health"
   | "stale-snapshot"
   | "task-failed"
+  | "lost-task"
   | "approval"
+  | "access"
+  | "security-posture"
   | "long-running-task"
   | "stale-active-session";
 
@@ -105,6 +109,7 @@ export interface WorkGraphModel {
 export interface AttentionItem {
   id: string;
   kind: AttentionKind;
+  category: AttentionCategory;
   tone: AttentionTone;
   title: string;
   summary?: string;
@@ -114,6 +119,21 @@ export interface AttentionItem {
   approval?: ApprovalSummary;
   timestamp?: string;
   links: RuntimeLinks;
+}
+
+export interface InterventionSummary {
+  tone: AttentionTone | "ok";
+  headline: string;
+  counts: {
+    total: number;
+    error: number;
+    warn: number;
+    info: number;
+    intervention: number;
+    access: number;
+    security: number;
+  };
+  items: AttentionItem[];
 }
 
 export interface DashboardModel {
@@ -133,6 +153,7 @@ export interface DashboardModel {
   activeWork: ActiveWorkItem[];
   workGraph: WorkGraphModel;
   attention: AttentionItem[];
+  interventionSummary: InterventionSummary;
   recentEvents: TimelineEvent[];
 }
 
@@ -220,7 +241,36 @@ export function buildDashboardModel(
     activeWork,
     workGraph,
     attention,
+    interventionSummary: buildInterventionSummary(attention),
     recentEvents,
+  };
+}
+
+export function buildInterventionSummary(attention: AttentionItem[]): InterventionSummary {
+  const counts = attention.reduce(
+    (acc, item) => {
+      acc.total += 1;
+      acc[item.tone] += 1;
+      acc[item.category] += 1;
+      return acc;
+    },
+    { total: 0, error: 0, warn: 0, info: 0, intervention: 0, access: 0, security: 0 },
+  );
+
+  const tone: InterventionSummary["tone"] =
+    counts.error > 0 ? "error" : counts.warn > 0 ? "warn" : counts.info > 0 ? "info" : "ok";
+  const headline =
+    tone === "ok"
+      ? "No intervention needed"
+      : counts.error > 0
+        ? `${counts.error} critical item${counts.error === 1 ? "" : "s"} need attention`
+        : `${counts.warn} warning${counts.warn === 1 ? "" : "s"} to review`;
+
+  return {
+    tone,
+    headline,
+    counts,
+    items: attention,
   };
 }
 
@@ -270,7 +320,7 @@ export function buildWorkGraphModel(
 
   for (const session of snapshot.sessions) {
     const role = workRoleForSession(session);
-    const parentSessionKey = sessionParentHints.get(session.key);
+    const parentSessionKey = session.parentSessionKey ?? session.spawnedBy ?? session.ownerSessionKey ?? sessionParentHints.get(session.key);
     const parentId =
       parentSessionKey && parentSessionKey !== session.key && sessionsByKey.has(parentSessionKey)
         ? `session:${parentSessionKey}`
@@ -339,14 +389,36 @@ export function buildWorkGraphModel(
     });
   }
 
-  const rawNodes = [...nodes.values()];
-  const rawEdges = linkWorkGraphNodes(rawNodes, nodes);
-  const rawRoots = rawNodes.filter((node) => !node.parentId || !nodes.has(node.parentId));
+  const allNodes = [...nodes.values()];
+  const edges: WorkGraphEdge[] = [];
+  const roots: WorkGraphNode[] = [];
+  for (const node of allNodes) {
+    const parent = node.parentId ? nodes.get(node.parentId) : undefined;
+    if (parent && parent.id !== node.id) {
+      parent.children.push(node);
+      edges.push({ from: parent.id, to: node.id, kind: edgeKindFor(parent, node) });
+    } else {
+      roots.push(node);
+    }
+  }
 
-  sortWorkGraphNodes(rawRoots);
-  for (const node of rawNodes) sortWorkGraphNodes(node.children);
+  sortWorkGraphNodes(roots);
+  for (const node of allNodes) sortWorkGraphNodes(node.children);
 
-  return activeOnlyWorkGraph(rawRoots, rawNodes, rawEdges);
+  const childNodes = allNodes.filter((node) => node.kind !== "agent");
+  return {
+    roots,
+    nodes: allNodes.sort(compareWorkGraphNodes),
+    edges,
+    summary: {
+      roots: roots.length,
+      children: childNodes.length,
+      active: childNodes.filter((node) => isActiveWorkGraphStatus(node.status)).length,
+      failed: childNodes.filter((node) => node.status === "failed").length,
+      lost: childNodes.filter((node) => node.status === "lost").length,
+      hiddenInactive: childNodes.filter((node) => !isActiveWorkGraphStatus(node.status)).length,
+    },
+  };
 }
 
 export function buildTaskDetailModel(
@@ -525,6 +597,7 @@ function buildAttentionItems(
     items.push({
       id: "gateway:connection",
       kind: "gateway",
+      category: "access",
       tone: "error",
       title: "Gateway is not connected",
       summary: `Connection state is ${snapshot.connectionState}.`,
@@ -537,6 +610,7 @@ function buildAttentionItems(
     items.push({
       id: "gateway:health",
       kind: "health",
+      category: "access",
       tone: snapshot.health.ok === false ? "error" : "warn",
       title: snapshot.health.ok === false ? "Gateway health check is failing" : "Gateway health is degraded",
       timestamp: snapshot.updatedAt,
@@ -548,6 +622,7 @@ function buildAttentionItems(
     items.push({
       id: "snapshot:stale",
       kind: "stale-snapshot",
+      category: "access",
       tone: "warn",
       title: "Runtime snapshot is stale",
       summary: `Last update was ${formatAge(snapshot.updatedAt, context.nowMs)} ago.`,
@@ -562,6 +637,7 @@ function buildAttentionItems(
     items.push({
       id: `task-failed:${task.id}`,
       kind: "task-failed",
+      category: "intervention",
       tone: "error",
       title: task.title ?? task.id,
       summary: task.error ?? `Task ${task.status}.`,
@@ -573,14 +649,41 @@ function buildAttentionItems(
     });
   }
 
+  for (const task of snapshot.tasks.filter((candidate) => candidate.status === "running" || candidate.status === "queued")) {
+    const session = task.sessionKey ? context.sessionsByKey.get(task.sessionKey) : undefined;
+    const agentId = task.agentId ?? session?.agentId;
+    const hasKnownAgent = agentId ? context.agentsById.has(agentId) : false;
+    if (session || hasKnownAgent) continue;
+
+    items.push({
+      id: `task-lost:${task.id}`,
+      kind: "lost-task",
+      category: "intervention",
+      tone: "warn",
+      title: task.title ?? task.id,
+      summary: task.sessionKey
+        ? "Task references a session or agent that is not present in the runtime snapshot."
+        : "Task has no known session or agent context in the runtime snapshot.",
+      task,
+      timestamp: task.startedAt,
+      links: linksFor({ agentId, sessionKey: task.sessionKey, taskId: task.id }),
+    });
+  }
+
   for (const approval of context.pendingApprovals) {
     const session = approval.sessionKey ? context.sessionsByKey.get(approval.sessionKey) : undefined;
     const agentId = approval.agentId ?? session?.agentId;
+    const highRisk = isHighRiskApproval(approval);
     items.push({
       id: `approval:${approval.id}`,
       kind: "approval",
-      tone: "warn",
-      title: approval.kind === "exec" ? "Execution approval pending" : "Plugin approval pending",
+      category: highRisk || approval.kind === "plugin" ? "security" : "intervention",
+      tone: highRisk ? "error" : "warn",
+      title: highRisk
+        ? "High-risk approval pending"
+        : approval.kind === "exec"
+          ? "Execution approval pending"
+          : "Plugin approval pending",
       summary: approval.command,
       agent: agentId ? context.agentsById.get(agentId) : undefined,
       session,
@@ -590,16 +693,17 @@ function buildAttentionItems(
     });
   }
 
-  for (const task of snapshot.tasks.filter((candidate) => candidate.status === "running")) {
+  for (const task of snapshot.tasks.filter((candidate) => candidate.status === "running" || candidate.status === "queued")) {
     if (!isOlderThan(task.startedAt, context.nowMs, context.longRunningTaskAfterMs)) continue;
     const session = task.sessionKey ? context.sessionsByKey.get(task.sessionKey) : undefined;
     const agentId = task.agentId ?? session?.agentId;
     items.push({
       id: `task-long-running:${task.id}`,
       kind: "long-running-task",
+      category: "intervention",
       tone: "warn",
       title: task.title ?? task.id,
-      summary: `Running for ${formatAge(task.startedAt, context.nowMs)}.`,
+      summary: `${task.status === "queued" ? "Queued" : "Running"} for ${formatAge(task.startedAt, context.nowMs)}.`,
       agent: agentId ? context.agentsById.get(agentId) : undefined,
       session,
       task,
@@ -614,6 +718,7 @@ function buildAttentionItems(
     items.push({
       id: `session-stale:${session.key}`,
       kind: "stale-active-session",
+      category: "intervention",
       tone: "warn",
       title: session.label ?? shortSessionKey(session.key),
       summary: `Active session has no update for ${formatAge(updatedAt, context.nowMs)}.`,
@@ -621,6 +726,32 @@ function buildAttentionItems(
       session,
       timestamp: updatedAt,
       links: linksFor({ agentId: session.agentId, sessionKey: session.key }),
+    });
+  }
+
+  for (const node of snapshot.nodes.filter((candidate) => !candidate.connected)) {
+    items.push({
+      id: `access-node:${node.id}`,
+      kind: "access",
+      category: "access",
+      tone: "warn",
+      title: `${node.label ?? node.id} disconnected`,
+      summary: node.platform ? `${node.platform} node is not connected.` : "Node is not connected.",
+      timestamp: snapshot.updatedAt,
+      links: { timeline: "/timeline" },
+    });
+  }
+
+  for (const warning of deriveSecurityPostureWarnings(snapshot.health?.raw)) {
+    items.push({
+      id: `security:${warning.id}`,
+      kind: "security-posture",
+      category: "security",
+      tone: warning.tone,
+      title: warning.title,
+      summary: warning.summary,
+      timestamp: snapshot.updatedAt,
+      links: { timeline: "/timeline" },
     });
   }
 
@@ -717,60 +848,6 @@ function edgeKindFor(parent: WorkGraphNode, child: WorkGraphNode): WorkGraphEdge
   return "owns";
 }
 
-function linkWorkGraphNodes(allNodes: WorkGraphNode[], nodesById: Map<string, WorkGraphNode>): WorkGraphEdge[] {
-  const edges: WorkGraphEdge[] = [];
-  for (const node of allNodes) node.children = [];
-  for (const node of allNodes) {
-    const parent = node.parentId ? nodesById.get(node.parentId) : undefined;
-    if (parent && parent.id !== node.id) {
-      parent.children.push(node);
-      edges.push({ from: parent.id, to: node.id, kind: edgeKindFor(parent, node) });
-    }
-  }
-  return edges;
-}
-
-function activeOnlyWorkGraph(rawRoots: WorkGraphNode[], rawNodes: WorkGraphNode[], rawEdges: WorkGraphEdge[]): WorkGraphModel {
-  const cloneActiveSubtree = (node: WorkGraphNode): WorkGraphNode | undefined => {
-    const children = node.children.map(cloneActiveSubtree).filter((child): child is WorkGraphNode => Boolean(child));
-    const keep = isActiveWorkGraphStatus(node.status) || children.length > 0;
-    if (!keep) return undefined;
-    return { ...node, children };
-  };
-
-  const roots = rawRoots.map(cloneActiveSubtree).filter((node): node is WorkGraphNode => Boolean(node));
-  sortWorkGraphNodes(roots);
-  const nodes = flattenWorkGraphNodes(roots).sort(compareWorkGraphNodes);
-  const visibleIds = new Set(nodes.map((node) => node.id));
-  const edges = rawEdges.filter((edge) => visibleIds.has(edge.from) && visibleIds.has(edge.to));
-  const childNodes = nodes.filter((node) => node.kind !== "agent");
-  const hiddenInactive = rawNodes.filter((node) => !visibleIds.has(node.id) && !isActiveWorkGraphStatus(node.status)).length;
-
-  return {
-    roots,
-    nodes,
-    edges,
-    summary: {
-      roots: roots.length,
-      children: childNodes.length,
-      active: childNodes.filter((node) => isActiveWorkGraphStatus(node.status)).length,
-      failed: childNodes.filter((node) => node.status === "failed").length,
-      lost: childNodes.filter((node) => node.status === "lost").length,
-      hiddenInactive,
-    },
-  };
-}
-
-function flattenWorkGraphNodes(roots: WorkGraphNode[]): WorkGraphNode[] {
-  const out: WorkGraphNode[] = [];
-  const visit = (node: WorkGraphNode) => {
-    out.push(node);
-    for (const child of node.children) visit(child);
-  };
-  for (const root of roots) visit(root);
-  return out;
-}
-
 function sortWorkGraphNodes(nodes: WorkGraphNode[]): void {
   nodes.sort(compareWorkGraphNodes);
 }
@@ -833,6 +910,8 @@ function filterMeaningfulEvents(events: TimelineEvent[]): TimelineEvent[] {
 function compareAttention(a: AttentionItem, b: AttentionItem): number {
   const toneRank = rankTone(a.tone) - rankTone(b.tone);
   if (toneRank !== 0) return toneRank;
+  const kindRank = rankAttentionKind(a.kind) - rankAttentionKind(b.kind);
+  if (kindRank !== 0) return kindRank;
   return parseTime(b.timestamp) - parseTime(a.timestamp);
 }
 
@@ -844,6 +923,103 @@ function rankTone(tone: AttentionTone): number {
   if (tone === "error") return 0;
   if (tone === "warn") return 1;
   return 2;
+}
+
+function rankAttentionKind(kind: AttentionKind): number {
+  switch (kind) {
+    case "gateway":
+      return 0;
+    case "health":
+      return 1;
+    case "security-posture":
+      return 2;
+    case "approval":
+      return 3;
+    case "task-failed":
+      return 4;
+    case "lost-task":
+      return 5;
+    case "access":
+      return 6;
+    case "long-running-task":
+      return 7;
+    case "stale-active-session":
+      return 8;
+    case "stale-snapshot":
+      return 9;
+  }
+}
+
+function isHighRiskApproval(approval: ApprovalSummary): boolean {
+  if (approval.kind === "plugin") return true;
+  const command = approval.command?.toLowerCase() ?? "";
+  return (
+    /\b(sudo|su|chmod|chown|iptables|ufw|systemctl|service|mount|umount|mkfs|dd|curl|wget|nc|netcat)\b/.test(command) ||
+    /\brm\s+(-[^\s]*[rf]|[^\s]*\*)/.test(command) ||
+    /\|\s*(sh|bash)\b/.test(command) ||
+    />\s*\/(etc|usr|bin|sbin|boot|var)\b/.test(command)
+  );
+}
+
+function deriveSecurityPostureWarnings(raw: Record<string, unknown> | undefined): Array<{
+  id: string;
+  tone: AttentionTone;
+  title: string;
+  summary?: string;
+}> {
+  if (!raw) return [];
+  const warnings: Array<{ id: string; tone: AttentionTone; title: string; summary?: string }> = [];
+
+  if (hasDisabledAuth(raw)) {
+    warnings.push({
+      id: "auth-disabled",
+      tone: "error",
+      title: "Gateway authentication appears disabled",
+      summary: "Health metadata reports auth disabled or not required.",
+    });
+  }
+
+  if (hasWriteWithoutApproval(raw)) {
+    warnings.push({
+      id: "approval-bypass",
+      tone: "warn",
+      title: "Write approvals may be bypassed",
+      summary: "Health metadata reports writes or high-risk actions without approval requirements.",
+    });
+  }
+
+  return warnings;
+}
+
+function hasDisabledAuth(value: unknown): boolean {
+  return walkPosture(value, (key, candidate) => {
+    const normalized = key.toLowerCase();
+    if (!/(auth|authentication|token|login)/.test(normalized)) return false;
+    return candidate === false || candidate === "false" || candidate === "disabled" || candidate === "none";
+  });
+}
+
+function hasWriteWithoutApproval(value: unknown): boolean {
+  return walkPosture(value, (key, candidate) => {
+    const normalized = key.toLowerCase();
+    if (/(allowwriteswithoutapproval|bypassapproval|approvalbypass)/.test(normalized)) {
+      return candidate === true || candidate === "true" || candidate === "enabled";
+    }
+    if (/(approvalrequired|requiresapproval|confirmationsrequired)/.test(normalized)) {
+      return candidate === false || candidate === "false" || candidate === "disabled";
+    }
+    return false;
+  });
+}
+
+function walkPosture(value: unknown, predicate: (key: string, candidate: unknown) => boolean, path = ""): boolean {
+  if (!value || typeof value !== "object") return false;
+  for (const [key, candidate] of Object.entries(value as Record<string, unknown>)) {
+    const scopedKey = path ? `${path}.${key}` : key;
+    if (predicate(scopedKey, candidate)) return true;
+    if (candidate && typeof candidate === "object" && walkPosture(candidate, predicate, scopedKey)) return true;
+  }
+  return false;
 }
 
 function rankActiveStatus(status: ActiveWorkItem["status"]): number {

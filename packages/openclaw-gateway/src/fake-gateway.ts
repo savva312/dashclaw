@@ -1,28 +1,58 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 
+export const FAKE_GATEWAY_SCENARIOS = ["idle", "busy", "failed", "approval-heavy", "degraded"] as const;
+export type FakeGatewayScenario = (typeof FAKE_GATEWAY_SCENARIOS)[number];
+
 export interface FakeGatewayOptions {
   port?: number;
   token?: string;
+  scenario?: FakeGatewayScenario;
 }
 
 export interface FakeGatewayHandle {
   url: string;
   port: number;
+  scenario: FakeGatewayScenario;
   close: () => Promise<void>;
   emitEvent: (event: string, payload?: unknown) => void;
 }
 
+type JsonObject = Record<string, unknown>;
+
+interface FakeGatewayScenarioData {
+  health: JsonObject;
+  agents: JsonObject[];
+  sessions: JsonObject[];
+  tasks: JsonObject[];
+  jobs: JsonObject[];
+  nodes: JsonObject[];
+  approvals: JsonObject[];
+  logs: string[];
+}
+
+const BASE_TIME = Date.parse("2026-06-24T18:00:00.000Z");
+
 /** Minimal in-process Gateway mock for tests and offline development */
 export async function startFakeGateway(options: FakeGatewayOptions = {}): Promise<FakeGatewayHandle> {
   const token = options.token ?? "test-token";
+  const scenario = options.scenario ?? "busy";
+  const state = cloneScenarioData(buildScenarioData(scenario));
   const clients = new Set<WebSocket>();
   let seq = 0;
 
   const server: Server = createServer((_req: IncomingMessage, res: ServerResponse) => {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true, service: "fake-openclaw-gateway" }));
+    res.end(JSON.stringify({ ok: true, service: "fake-openclaw-gateway", scenario }));
   });
+
+  const emitEvent = (event: string, payload?: unknown) => {
+    seq += 1;
+    const msg = JSON.stringify({ type: "event", event, payload, seq });
+    for (const ws of clients) {
+      if (ws.readyState === ws.OPEN) ws.send(msg);
+    }
+  };
 
   const wss = new WebSocketServer({ server });
   wss.on("connection", (ws) => {
@@ -53,9 +83,28 @@ export async function startFakeGateway(options: FakeGatewayOptions = {}): Promis
             payload: {
               type: "hello-ok",
               protocol: 4,
-              server: { version: "fake-2026.6.0", connId: "fake-conn" },
-              features: { methods: ["health", "agents.list", "sessions.list"], events: ["agent", "health"] },
-              snapshot: { presence: [], health: { ok: true } },
+              server: { version: "fake-2026.6.0", connId: "fake-conn", scenario },
+              features: {
+                methods: [
+                  "health",
+                  "status",
+                  "agents.list",
+                  "sessions.list",
+                  "sessions.preview",
+                  "tasks.list",
+                  "tasks.get",
+                  "cron.list",
+                  "cron.runs",
+                  "node.list",
+                  "exec.approval.list",
+                  "exec.approval.get",
+                  "exec.approval.resolve",
+                  "plugin.approval.resolve",
+                  "logs.tail",
+                ],
+                events: ["agent", "health", "sessions.changed", "exec.approval.requested", "exec.approval.resolved"],
+              },
+              snapshot: { presence: [], health: state.health },
               auth: { role: "operator", scopes: ["operator.read", "operator.write", "operator.admin"] },
               policy: { maxPayload: 26214400, tickIntervalMs: 15000 },
             },
@@ -64,26 +113,14 @@ export async function startFakeGateway(options: FakeGatewayOptions = {}): Promis
         return;
       }
 
-      const responses: Record<string, unknown> = {
-        health: { ok: true, uptimeMs: 12345, version: "fake-2026.6.0" },
-        status: { runtime: "running" },
-        "agents.list": { agents: [{ id: "main", name: "Main Agent", model: "openclaw/default" }] },
-        "sessions.list": {
-          sessions: [
-            { key: "agent:main:main", agentId: "main", label: "Main", updatedAt: new Date().toISOString() },
-          ],
-        },
-        "tasks.list": {
-          tasks: [{ id: "task-1", status: "running", title: "Review PR", agentId: "main", sessionKey: "agent:main:main" }],
-        },
-        "cron.list": { jobs: [{ id: "cron-1", name: "Daily digest", enabled: true, schedule: "0 9 * * *" }] },
-        "cron.runs": { runs: [] },
-        "node.list": { nodes: [] },
-        "exec.approval.list": { approvals: [] },
-        "logs.tail": { lines: ["[info] fake gateway running"] },
-      };
+      if (frame.method === "exec.approval.resolve" || frame.method === "plugin.approval.resolve") {
+        const approval = resolveApproval(state.approvals, frame.params);
+        emitEvent("exec.approval.resolved", approval);
+        ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload: { ok: true, approval } }));
+        return;
+      }
 
-      const payload = responses[frame.method] ?? {};
+      const payload = responseFor(state, frame.method, frame.params);
       ws.send(JSON.stringify({ type: "res", id: frame.id, ok: true, payload }));
     });
 
@@ -97,17 +134,241 @@ export async function startFakeGateway(options: FakeGatewayOptions = {}): Promis
   return {
     url: `ws://127.0.0.1:${port}`,
     port,
+    scenario,
     close: () =>
       new Promise((resolve) => {
         for (const ws of clients) ws.close();
         wss.close(() => server.close(() => resolve()));
       }),
-    emitEvent: (event, payload) => {
-      seq += 1;
-      const msg = JSON.stringify({ type: "event", event, payload, seq });
-      for (const ws of clients) {
-        if (ws.readyState === ws.OPEN) ws.send(msg);
-      }
-    },
+    emitEvent,
   };
+}
+
+function responseFor(state: FakeGatewayScenarioData, method: string, params?: Record<string, unknown>): unknown {
+  switch (method) {
+    case "health":
+      return state.health;
+    case "status":
+      return { runtime: state.health.ok === false ? "degraded" : "running" };
+    case "agents.list":
+      return { agents: state.agents };
+    case "sessions.list":
+      return { sessions: state.sessions };
+    case "sessions.preview": {
+      const key = typeof params?.key === "string" ? params.key : undefined;
+      const session = state.sessions.find((candidate) => candidate.key === key) ?? state.sessions[0];
+      return { session, messages: session ? [{ role: "assistant", content: `Preview for ${session.label ?? session.key}` }] : [] };
+    }
+    case "tasks.list":
+      return { tasks: filterTasks(state.tasks, params) };
+    case "tasks.get": {
+      const id = typeof params?.id === "string" ? params.id : undefined;
+      return { task: state.tasks.find((task) => task.id === id) ?? null };
+    }
+    case "cron.list":
+      return { jobs: state.jobs };
+    case "cron.runs":
+      return { runs: [] };
+    case "node.list":
+      return { nodes: state.nodes };
+    case "exec.approval.list":
+      return { approvals: state.approvals };
+    case "exec.approval.get": {
+      const id = typeof params?.id === "string" ? params.id : undefined;
+      return { approval: state.approvals.find((approval) => approval.id === id) ?? null };
+    }
+    case "logs.tail":
+      return { lines: state.logs };
+    default:
+      return {};
+  }
+}
+
+function filterTasks(tasks: JsonObject[], params?: Record<string, unknown>): JsonObject[] {
+  const status = params?.status;
+  if (!Array.isArray(status)) return tasks;
+  const statuses = new Set(status.filter((value): value is string => typeof value === "string"));
+  if (statuses.size === 0) return tasks;
+  return tasks.filter((task) => typeof task.status === "string" && statuses.has(task.status));
+}
+
+function resolveApproval(approvals: JsonObject[], params?: Record<string, unknown>): JsonObject {
+  const id = typeof params?.id === "string" ? params.id : undefined;
+  const decision = params?.decision === "approved" ? "approved" : "denied";
+  const approval = approvals.find((candidate) => candidate.id === id) ?? { id: id ?? "unknown", kind: "exec", command: "unknown" };
+  approval.status = decision;
+  approval.resolvedAt = new Date().toISOString();
+  return approval;
+}
+
+function buildScenarioData(scenario: FakeGatewayScenario): FakeGatewayScenarioData {
+  const common = commonScenarioData();
+
+  switch (scenario) {
+    case "idle":
+      return {
+        ...common,
+        sessions: [session("agent:main:main", "main", "Main", "idle", -2 * 60_000)],
+        tasks: [],
+        logs: ["[info] fake gateway idle"],
+      };
+    case "failed":
+      return {
+        ...common,
+        sessions: [
+          session("agent:main:failed-review", "main", "Failed review", "failed", -8 * 60_000),
+          session("agent:qa:timeout", "qa", "Timed-out QA check", "timeout", -20 * 60_000),
+        ],
+        tasks: [
+          task("task-failed-build", "failed", "Build failed", "main", "agent:main:failed-review", "run-failed-build", -12 * 60_000, -8 * 60_000, "pnpm test exited 1"),
+          task("task-timeout-qa", "timed_out", "QA smoke timed out", "qa", "agent:qa:timeout", "run-timeout-qa", -70 * 60_000, -20 * 60_000, "browser smoke exceeded 50m"),
+        ],
+        logs: ["[error] task-failed-build pnpm test exited 1", "[warn] task-timeout-qa timed out"],
+      };
+    case "approval-heavy":
+      return {
+        ...common,
+        sessions: [
+          session("agent:main:release", "main", "Release orchestration", "running", -30_000, "run-release", "git push"),
+          session("agent:ops:approval", "ops", "Production approval", "running", -60_000, "run-prod", "terraform plan"),
+        ],
+        tasks: [
+          task("task-release", "running", "Release orchestration", "main", "agent:main:release", "run-release", -35 * 60_000),
+          task("task-prod-approval", "queued", "Waiting on production approval", "ops", "agent:ops:approval", "run-prod", -15 * 60_000),
+        ],
+        approvals: [
+          approval("approval-restart", "exec", "gateway.restart.request --reason deploy", "main", "agent:main:release", -10 * 60_000),
+          approval("approval-terraform", "exec", "terraform apply -auto-approve", "ops", "agent:ops:approval", -8 * 60_000),
+          approval("approval-plugin", "plugin", "deploy-plugin publish canary", "ops", "agent:ops:approval", -5 * 60_000),
+        ],
+        logs: ["[warn] 3 approvals pending", "[info] release orchestration waiting for operator"],
+      };
+    case "degraded":
+      return {
+        ...common,
+        health: { ok: true, degraded: true, uptimeMs: 12345, version: "fake-2026.6.0", reason: "event stream lagging" },
+        sessions: [
+          session("agent:main:main", "main", "Main", "running", -12 * 60_000, "run-stale", "process"),
+          session("agent:worker:subagent", "worker", "Subagent result delivery", "running", -18 * 60_000, "run-delivery", "sessions_yield"),
+        ],
+        tasks: [
+          task("task-stale-main", "running", "Long running main task", "main", "agent:main:main", "run-stale", -65 * 60_000),
+          task("task-delivery-lost", "failed", "Subagent delivery failed", "worker", "agent:worker:subagent", "run-delivery", -25 * 60_000, -18 * 60_000, "parent session unavailable", {
+            parentSessionKey: "agent:main:main",
+            deliveryState: "failed-delivery",
+          }),
+        ],
+        nodes: [{ id: "node-phone", label: "Phone", connected: false, platform: "ios" }],
+        logs: ["[warn] gateway degraded: event stream lagging", "[error] subagent delivery failed"],
+      };
+    case "busy":
+      return common;
+  }
+}
+
+function commonScenarioData(): FakeGatewayScenarioData {
+  return {
+    health: { ok: true, uptimeMs: 12345, version: "fake-2026.6.0" },
+    agents: [
+      { id: "main", name: "Main Agent", model: "openclaw/default", runtime: "openclaw", workspace: "/workspace" },
+      { id: "worker", name: "Worker Subagent", model: "openclaw/default", runtime: "openclaw", workspace: "/workspace" },
+      { id: "qa", name: "QA Agent", model: "openclaw/default", runtime: "openclaw", workspace: "/workspace" },
+      { id: "ops", name: "Ops Agent", model: "openclaw/default", runtime: "openclaw", workspace: "/workspace" },
+    ],
+    sessions: [
+      session("agent:main:main", "main", "Main", "running", -30_000, "run-main", "read"),
+      session("agent:worker:subagent", "worker", "Worker subagent", "running", -45_000, "run-subagent", "pnpm test", { parentSessionKey: "agent:main:main" }),
+      session("agent:qa:queued", "qa", "Queued QA", "queued", -90_000),
+    ],
+    tasks: [
+      task("task-1", "running", "Review PR", "main", "agent:main:main", "run-main", -5 * 60_000),
+      task("task-subagent-1", "running", "Run dashboard selectors", "worker", "agent:worker:subagent", "run-subagent", -4 * 60_000, undefined, undefined, {
+        kind: "subagent",
+        parentTaskId: "task-1",
+        parentSessionKey: "agent:main:main",
+      }),
+      task("task-queued-qa", "queued", "Queue browser smoke", "qa", "agent:qa:queued", "run-qa", -2 * 60_000),
+    ],
+    jobs: [{ id: "cron-1", name: "Daily digest", enabled: true, schedule: "0 9 * * *" }],
+    nodes: [{ id: "node-desktop", label: "Desktop", connected: true, platform: "linux" }],
+    approvals: [],
+    logs: ["[info] fake gateway running", "[info] subagent task linked to parent task-1"],
+  };
+}
+
+function session(
+  key: string,
+  agentId: string,
+  label: string,
+  status: string,
+  updatedOffsetMs: number,
+  currentRunId?: string,
+  currentTool?: string,
+  extra: JsonObject = {},
+): JsonObject {
+  return {
+    key,
+    agentId,
+    label,
+    status,
+    isActive: status === "running" || status === "queued",
+    updatedAt: iso(updatedOffsetMs),
+    lastInteractionAt: iso(updatedOffsetMs),
+    currentRunId,
+    currentTool,
+    ...extra,
+  };
+}
+
+function task(
+  id: string,
+  status: string,
+  title: string,
+  agentId: string,
+  sessionKey: string,
+  runId: string,
+  startedOffsetMs: number,
+  endedOffsetMs?: number,
+  error?: string,
+  extra: JsonObject = {},
+): JsonObject {
+  return {
+    id,
+    status,
+    title,
+    agentId,
+    sessionKey,
+    runId,
+    startedAt: iso(startedOffsetMs),
+    endedAt: endedOffsetMs === undefined ? undefined : iso(endedOffsetMs),
+    error,
+    ...extra,
+  };
+}
+
+function approval(
+  id: string,
+  kind: "exec" | "plugin",
+  command: string,
+  agentId: string,
+  sessionKey: string,
+  requestedOffsetMs: number,
+): JsonObject {
+  return {
+    id,
+    kind,
+    status: "pending",
+    command,
+    agentId,
+    sessionKey,
+    requestedAt: iso(requestedOffsetMs),
+  };
+}
+
+function iso(offsetMs: number): string {
+  return new Date(BASE_TIME + offsetMs).toISOString();
+}
+
+function cloneScenarioData(data: FakeGatewayScenarioData): FakeGatewayScenarioData {
+  return JSON.parse(JSON.stringify(data)) as FakeGatewayScenarioData;
 }
