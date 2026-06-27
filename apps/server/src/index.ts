@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
+import type { FakeGatewayScenario } from "@dashclaw/openclaw-gateway";
 import { AdminService } from "./admin-service.js";
 import { GatewayBridge } from "./gateway-bridge.js";
 import { RuntimeStore } from "./runtime-store.js";
@@ -19,6 +20,7 @@ const DASHBOARD_TOKEN = process.env.DASHCLAW_TOKEN ?? randomUUID();
 const DASHBOARD_TOKEN_FROM_ENV = Boolean(process.env.DASHCLAW_TOKEN);
 const DB_PATH = process.env.DASHCLAW_DB ?? join(process.cwd(), "data", "dashclaw.db");
 const USE_FAKE = process.env.DASHCLAW_FAKE_GATEWAY === "1";
+const FAKE_GATEWAY_SCENARIO = parseFakeGatewayScenario(process.env.DASHCLAW_FAKE_GATEWAY_SCENARIO);
 const WEB_DIST = process.env.DASHCLAW_WEB_DIST ?? join(process.cwd(), "apps/web/dist");
 const SERVE_WEB = process.env.DASHCLAW_SERVE_WEB !== "0" && existsSync(join(WEB_DIST, "index.html"));
 
@@ -32,9 +34,9 @@ async function main(): Promise<void> {
   if (USE_FAKE) {
     const { startFakeGateway } = await import("@dashclaw/openclaw-gateway");
     gatewayToken = gatewayToken ?? "test-token";
-    const fake = await startFakeGateway({ token: gatewayToken });
+    const fake = await startFakeGateway({ token: gatewayToken, scenario: FAKE_GATEWAY_SCENARIO });
     gatewayUrl = fake.url;
-    console.log(`[dashclaw] fake gateway at ${gatewayUrl}`);
+    console.log(`[dashclaw] fake gateway at ${gatewayUrl} (${fake.scenario})`);
   }
 
   const bridge = new GatewayBridge({
@@ -78,6 +80,20 @@ async function main(): Promise<void> {
   };
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
+}
+
+function parseFakeGatewayScenario(value: string | undefined): FakeGatewayScenario | undefined {
+  if (
+    value === "idle" ||
+    value === "busy" ||
+    value === "failed" ||
+    value === "approval-heavy" ||
+    value === "degraded"
+  ) {
+    return value;
+  }
+  if (value) console.warn(`[dashclaw] ignoring unknown fake gateway scenario: ${value}`);
+  return undefined;
 }
 
 void main();
