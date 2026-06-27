@@ -1556,3 +1556,31 @@ textarea {
     display: none;
   }
 }
+
+.work-graph-viewport {
+  position: relative;
+  min-height: 18rem;
+  max-height: 34rem;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.85rem;
+  background:
+    radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--ink-muted) 22%, transparent) 1px, transparent 0) 0 0 / 22px 22px,
+    color-mix(in srgb, var(--bg-elevated) 94%, var(--ink-muted));
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.work-graph-viewport.is-panning {
+  cursor: grabbing;
+}
+
+.work-graph-canvas {
+  display: grid;
+  gap: 0.65rem;
+  min-width: max-content;
+  padding: 1rem;
+  transform-origin: 0 0;
+  will-change: transform;
+}

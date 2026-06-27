@@ -163,6 +163,108 @@ describe("dashboard selectors", () => {
     });
   });
 
+  it("derives an active-only work graph with parent agent, subagent, and running task children", () => {
+    const model = buildDashboardModel(
+      snapshot({
+        agents: [{ id: "agent-a", name: "Main Agent", model: "gpt-test" }],
+        sessions: [
+          {
+            key: "agent:agent-a:discord:channel:root",
+            agentId: "agent-a",
+            label: "Discord parent",
+            isActive: true,
+            updatedAt: "2026-06-22T11:59:45.000Z",
+          },
+          {
+            key: "agent:agent-a:subagent:child-1",
+            agentId: "agent-a",
+            label: "Subagent child",
+            isActive: true,
+            currentTool: "pnpm test",
+            updatedAt: "2026-06-22T11:59:30.000Z",
+          },
+          {
+            key: "agent:agent-a:acp:lane-1",
+            agentId: "agent-a",
+            label: "ACP lane",
+            status: "done",
+            isActive: true,
+            updatedAt: "2026-06-22T11:59:20.000Z",
+          },
+          {
+            key: "agent:agent-a:cron:nightly",
+            agentId: "agent-a",
+            label: "Nightly cron",
+            isActive: true,
+            updatedAt: "2026-06-22T11:40:00.000Z",
+          },
+        ],
+        tasks: [
+          {
+            id: "task-subagent",
+            status: "running",
+            title: "Implement slice",
+            agentId: "agent-a",
+            sessionKey: "agent:agent-a:subagent:child-1",
+            startedAt: "2026-06-22T11:58:00.000Z",
+          },
+          {
+            id: "task-acp-failed",
+            status: "failed",
+            title: "ACP handoff",
+            agentId: "agent-a",
+            sessionKey: "agent:agent-a:acp:lane-1",
+            endedAt: "2026-06-22T11:58:30.000Z",
+            error: "lost connection",
+          },
+        ],
+        cronJobs: [
+          {
+            id: "nightly",
+            name: "Nightly cron",
+            enabled: true,
+            schedule: "0 0 * * *",
+            nextRunAt: "2026-06-23T00:00:00.000Z",
+          },
+        ],
+      }),
+      [
+        {
+          id: "event-parent-link",
+          kind: "session.operation",
+          timestamp: "2026-06-22T11:59:35.000Z",
+          title: "Spawn subagent",
+          sessionKey: "agent:agent-a:subagent:child-1",
+          payload: { parentSessionKey: "agent:agent-a:discord:channel:root" },
+        },
+      ],
+      { nowMs: now },
+    );
+
+    const agentRoot = model.workGraph.roots.find((node) => node.id === "agent:agent-a");
+    const parentSession = agentRoot?.children.find((node) => node.id === "session:agent:agent-a:discord:channel:root");
+    const subagent = parentSession?.children.find((node) => node.id === "session:agent:agent-a:subagent:child-1");
+    const acp = agentRoot?.children.find((node) => node.id === "session:agent:agent-a:acp:lane-1");
+    const cron = agentRoot?.children.find((node) => node.id === "session:agent:agent-a:cron:nightly");
+
+    expect(model.workGraph.summary.children).toBe(3);
+    expect(model.workGraph.summary.active).toBe(3);
+    expect(model.workGraph.summary.failed).toBe(0);
+    expect(model.workGraph.summary.lost).toBe(0);
+    expect(model.workGraph.summary.hiddenInactive).toBeGreaterThanOrEqual(4);
+    expect(parentSession?.role).toBe("session");
+    expect(subagent).toMatchObject({ role: "subagent", status: "active", currentTool: "pnpm test" });
+    expect(subagent?.children[0]).toMatchObject({ kind: "task", status: "running" });
+    expect(acp).toBeUndefined();
+    expect(cron).toBeUndefined();
+    expect(model.workGraph.nodes.some((node) => node.status === "completed")).toBe(false);
+    expect(model.workGraph.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ from: "session:agent:agent-a:discord:channel:root", to: "session:agent:agent-a:subagent:child-1" }),
+      ]),
+    );
+  });
+
   it("builds task details from task, session, agent, and related events", () => {
     const events: TimelineEvent[] = [
       {

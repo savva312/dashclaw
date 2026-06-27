@@ -1,6 +1,7 @@
 import type {
   AgentSummary,
   ApprovalSummary,
+  CronJobSummary,
   RuntimeSnapshot,
   SessionSummary,
   TaskSummary,
@@ -50,6 +51,57 @@ export interface AgentWorkSummary {
   state: "working" | "attention" | "idle";
 }
 
+export type WorkGraphNodeKind = "agent" | "session" | "task" | "cron";
+export type WorkGraphNodeRole = "agent" | "session" | "dashboard" | "subagent" | "acp" | "cron" | "task";
+export type WorkGraphStatus =
+  | "active"
+  | "queued"
+  | "running"
+  | "scheduled"
+  | "idle"
+  | "completed"
+  | "failed"
+  | "lost"
+  | "disabled";
+
+export interface WorkGraphNode {
+  id: string;
+  label: string;
+  kind: WorkGraphNodeKind;
+  role: WorkGraphNodeRole;
+  status: WorkGraphStatus;
+  agent?: AgentSummary;
+  session?: SessionSummary;
+  task?: TaskSummary;
+  cronJob?: CronJobSummary;
+  parentId?: string;
+  currentTool?: string;
+  startedAt?: string;
+  updatedAt?: string;
+  links: RuntimeLinks;
+  children: WorkGraphNode[];
+}
+
+export interface WorkGraphEdge {
+  from: string;
+  to: string;
+  kind: "owns" | "runs" | "scheduled";
+}
+
+export interface WorkGraphModel {
+  roots: WorkGraphNode[];
+  nodes: WorkGraphNode[];
+  edges: WorkGraphEdge[];
+  summary: {
+    roots: number;
+    children: number;
+    active: number;
+    failed: number;
+    lost: number;
+    hiddenInactive: number;
+  };
+}
+
 export interface AttentionItem {
   id: string;
   kind: AttentionKind;
@@ -79,6 +131,7 @@ export interface DashboardModel {
   };
   agents: AgentWorkSummary[];
   activeWork: ActiveWorkItem[];
+  workGraph: WorkGraphModel;
   attention: AttentionItem[];
   recentEvents: TimelineEvent[];
 }
@@ -124,6 +177,10 @@ export function buildDashboardModel(
     (task) => task.status === "failed" || task.status === "timed_out",
   );
   const activeWork = buildActiveWork(snapshot, agentsById, sessionsByKey);
+  const workGraph = buildWorkGraphModel(snapshot, timeline, {
+    nowMs,
+    activeSessionStaleAfterMs,
+  });
   const attention = buildAttentionItems(snapshot, {
     agentsById,
     sessionsByKey,
@@ -161,9 +218,135 @@ export function buildDashboardModel(
     },
     agents,
     activeWork,
+    workGraph,
     attention,
     recentEvents,
   };
+}
+
+export function buildWorkGraphModel(
+  snapshot: RuntimeSnapshot,
+  timeline: TimelineEvent[],
+  options: Pick<DashboardModelOptions, "nowMs" | "activeSessionStaleAfterMs"> = {},
+): WorkGraphModel {
+  const nowMs = options.nowMs ?? Date.now();
+  const activeSessionStaleAfterMs =
+    options.activeSessionStaleAfterMs ?? DEFAULT_ACTIVE_SESSION_STALE_AFTER_MS;
+  const agentsById = mapBy(snapshot.agents, (agent) => agent.id);
+  const sessionsByKey = mapBy(snapshot.sessions, (session) => session.key);
+  const sessionParentHints = buildSessionParentHints(timeline);
+  const nodes = new Map<string, WorkGraphNode>();
+
+  for (const agent of snapshot.agents) {
+    const hasActiveWork =
+      snapshot.sessions.some(
+        (session) =>
+          session.agentId === agent.id &&
+          isActiveWorkGraphStatus(workStatusForSession(session, nowMs, activeSessionStaleAfterMs)),
+      ) ||
+      snapshot.tasks.some((task) => task.agentId === agent.id && (task.status === "running" || task.status === "queued"));
+    const hasFailedWork = snapshot.tasks.some(
+      (task) => task.agentId === agent.id && (task.status === "failed" || task.status === "timed_out"),
+    );
+    nodes.set(`agent:${agent.id}`, {
+      id: `agent:${agent.id}`,
+      label: agent.name ?? agent.id,
+      kind: "agent",
+      role: "agent",
+      status: hasActiveWork ? "active" : hasFailedWork ? "failed" : "idle",
+      agent,
+      updatedAt: newestTimestamp([
+        ...snapshot.sessions
+          .filter((session) => session.agentId === agent.id)
+          .map((session) => session.updatedAt ?? session.lastInteractionAt),
+        ...snapshot.tasks
+          .filter((task) => task.agentId === agent.id)
+          .map((task) => task.endedAt ?? task.startedAt),
+      ]),
+      links: linksFor({ agentId: agent.id }),
+      children: [],
+    });
+  }
+
+  for (const session of snapshot.sessions) {
+    const role = workRoleForSession(session);
+    const parentSessionKey = sessionParentHints.get(session.key);
+    const parentId =
+      parentSessionKey && parentSessionKey !== session.key && sessionsByKey.has(parentSessionKey)
+        ? `session:${parentSessionKey}`
+        : session.agentId && agentsById.has(session.agentId)
+          ? `agent:${session.agentId}`
+          : undefined;
+
+    nodes.set(`session:${session.key}`, {
+      id: `session:${session.key}`,
+      label: session.label ?? shortSessionKey(session.key),
+      kind: "session",
+      role,
+      status: workStatusForSession(session, nowMs, activeSessionStaleAfterMs),
+      agent: session.agentId ? agentsById.get(session.agentId) : undefined,
+      session,
+      parentId,
+      currentTool: session.currentTool,
+      updatedAt: session.updatedAt ?? session.lastInteractionAt,
+      links: linksFor({ agentId: session.agentId, sessionKey: session.key }),
+      children: [],
+    });
+  }
+
+  for (const task of snapshot.tasks.filter(includeTaskInWorkGraph)) {
+    const session = task.sessionKey ? sessionsByKey.get(task.sessionKey) : undefined;
+    const agentId = task.agentId ?? session?.agentId;
+    const parentId =
+      task.sessionKey && nodes.has(`session:${task.sessionKey}`)
+        ? `session:${task.sessionKey}`
+        : agentId && nodes.has(`agent:${agentId}`)
+          ? `agent:${agentId}`
+          : undefined;
+
+    nodes.set(`task:${task.id}`, {
+      id: `task:${task.id}`,
+      label: task.title ?? task.id,
+      kind: "task",
+      role: "task",
+      status: workStatusForTask(task),
+      agent: agentId ? agentsById.get(agentId) : undefined,
+      session,
+      task,
+      parentId,
+      startedAt: task.startedAt,
+      updatedAt: task.endedAt ?? task.startedAt,
+      links: linksFor({ agentId, sessionKey: session?.key ?? task.sessionKey, taskId: task.id }),
+      children: [],
+    });
+  }
+
+  for (const cronJob of snapshot.cronJobs) {
+    const parentSession = findCronSessionForJob(cronJob, snapshot.sessions);
+    const parentId = parentSession && nodes.has(`session:${parentSession.key}`) ? `session:${parentSession.key}` : undefined;
+    nodes.set(`cron:${cronJob.id}`, {
+      id: `cron:${cronJob.id}`,
+      label: cronJob.name ?? cronJob.id,
+      kind: "cron",
+      role: "cron",
+      status: workStatusForCron(cronJob),
+      cronJob,
+      parentId,
+      startedAt: cronJob.lastRunAt,
+      updatedAt: newestTimestamp([cronJob.nextRunAt, cronJob.lastRunAt]),
+      links: { timeline: "/timeline" },
+      children: [],
+    });
+  }
+
+  const rawNodes = [...nodes.values()];
+  const rawEdges = linkWorkGraphNodes(rawNodes, nodes);
+  const rawRoots = rawNodes.filter((node) => !node.parentId || !nodes.has(node.parentId));
+
+  sortWorkGraphNodes(rawRoots);
+  for (const node of rawNodes) sortWorkGraphNodes(node.children);
+
+  return activeOnlyWorkGraph(rawRoots, rawNodes, rawEdges);
 }
 
 export function buildTaskDetailModel(
@@ -442,6 +625,205 @@ function buildAttentionItems(
   }
 
   return items.sort(compareAttention);
+}
+
+function buildSessionParentHints(timeline: TimelineEvent[]): Map<string, string> {
+  const hints = new Map<string, string>();
+  for (const event of timeline) {
+    const childKey = event.sessionKey ?? payloadString(event.payload, "sessionKey", "key", "childSessionKey");
+    const parentKey = payloadString(
+      event.payload,
+      "parentSessionKey",
+      "requesterSessionKey",
+      "sourceSessionKey",
+      "originSessionKey",
+    );
+    if (childKey && parentKey && childKey !== parentKey) hints.set(childKey, parentKey);
+  }
+  return hints;
+}
+
+function payloadString(payload: Record<string, unknown> | undefined, ...keys: string[]): string | undefined {
+  if (!payload) return undefined;
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  const parent = payload.parent;
+  if (parent && typeof parent === "object") {
+    for (const key of keys) {
+      const value = (parent as Record<string, unknown>)[key];
+      if (typeof value === "string" && value.length > 0) return value;
+    }
+  }
+  return undefined;
+}
+
+function workRoleForSession(session: SessionSummary): WorkGraphNodeRole {
+  const kind = sessionKind(session.key);
+  if (kind === "dashboard") return "dashboard";
+  if (kind === "subagent") return "subagent";
+  if (kind === "acp") return "acp";
+  if (kind === "cron") return "cron";
+  return "session";
+}
+
+function workStatusForSession(
+  session: SessionSummary,
+  nowMs: number,
+  activeSessionStaleAfterMs: number,
+): WorkGraphStatus {
+  const status = normalizeWorkStatusText(session.status);
+  if (status === "failed") return "failed";
+  if (status === "lost") return "lost";
+  if (status === "completed") return "completed";
+  if (session.isActive && isOlderThan(session.updatedAt ?? session.lastInteractionAt, nowMs, activeSessionStaleAfterMs)) {
+    return "lost";
+  }
+  if (status === "queued") return "queued";
+  if (status === "running" || session.isActive || session.currentRunId) return "active";
+  return "idle";
+}
+
+function includeTaskInWorkGraph(task: TaskSummary): boolean {
+  return task.status === "running" || task.status === "queued" || task.status === "failed" || task.status === "timed_out";
+}
+
+function workStatusForTask(task: TaskSummary): WorkGraphStatus {
+  if (task.status === "running") return "running";
+  if (task.status === "queued") return "queued";
+  if (task.status === "failed") return "failed";
+  if (task.status === "timed_out") return "lost";
+  if (task.status === "completed") return "completed";
+  return "idle";
+}
+
+function workStatusForCron(cronJob: CronJobSummary): WorkGraphStatus {
+  if (!cronJob.enabled) return "disabled";
+  if (cronJob.lastStatus === "failed" || cronJob.lastStatus === "error") return "failed";
+  if (cronJob.lastStatus === "running") return "running";
+  if (cronJob.nextRunAt) return "scheduled";
+  return "idle";
+}
+
+function findCronSessionForJob(cronJob: CronJobSummary, sessions: SessionSummary[]): SessionSummary | undefined {
+  const candidates = sessions.filter((session) => workRoleForSession(session) === "cron");
+  return candidates.find((session) => session.key.includes(cronJob.id) || session.label === cronJob.name);
+}
+
+function edgeKindFor(parent: WorkGraphNode, child: WorkGraphNode): WorkGraphEdge["kind"] {
+  if (child.kind === "cron") return "scheduled";
+  if (parent.kind === "session" || child.kind === "task") return "runs";
+  return "owns";
+}
+
+function linkWorkGraphNodes(allNodes: WorkGraphNode[], nodesById: Map<string, WorkGraphNode>): WorkGraphEdge[] {
+  const edges: WorkGraphEdge[] = [];
+  for (const node of allNodes) node.children = [];
+  for (const node of allNodes) {
+    const parent = node.parentId ? nodesById.get(node.parentId) : undefined;
+    if (parent && parent.id !== node.id) {
+      parent.children.push(node);
+      edges.push({ from: parent.id, to: node.id, kind: edgeKindFor(parent, node) });
+    }
+  }
+  return edges;
+}
+
+function activeOnlyWorkGraph(rawRoots: WorkGraphNode[], rawNodes: WorkGraphNode[], rawEdges: WorkGraphEdge[]): WorkGraphModel {
+  const cloneActiveSubtree = (node: WorkGraphNode): WorkGraphNode | undefined => {
+    const children = node.children.map(cloneActiveSubtree).filter((child): child is WorkGraphNode => Boolean(child));
+    const keep = isActiveWorkGraphStatus(node.status) || children.length > 0;
+    if (!keep) return undefined;
+    return { ...node, children };
+  };
+
+  const roots = rawRoots.map(cloneActiveSubtree).filter((node): node is WorkGraphNode => Boolean(node));
+  sortWorkGraphNodes(roots);
+  const nodes = flattenWorkGraphNodes(roots).sort(compareWorkGraphNodes);
+  const visibleIds = new Set(nodes.map((node) => node.id));
+  const edges = rawEdges.filter((edge) => visibleIds.has(edge.from) && visibleIds.has(edge.to));
+  const childNodes = nodes.filter((node) => node.kind !== "agent");
+  const hiddenInactive = rawNodes.filter((node) => !visibleIds.has(node.id) && !isActiveWorkGraphStatus(node.status)).length;
+
+  return {
+    roots,
+    nodes,
+    edges,
+    summary: {
+      roots: roots.length,
+      children: childNodes.length,
+      active: childNodes.filter((node) => isActiveWorkGraphStatus(node.status)).length,
+      failed: childNodes.filter((node) => node.status === "failed").length,
+      lost: childNodes.filter((node) => node.status === "lost").length,
+      hiddenInactive,
+    },
+  };
+}
+
+function flattenWorkGraphNodes(roots: WorkGraphNode[]): WorkGraphNode[] {
+  const out: WorkGraphNode[] = [];
+  const visit = (node: WorkGraphNode) => {
+    out.push(node);
+    for (const child of node.children) visit(child);
+  };
+  for (const root of roots) visit(root);
+  return out;
+}
+
+function sortWorkGraphNodes(nodes: WorkGraphNode[]): void {
+  nodes.sort(compareWorkGraphNodes);
+}
+
+function compareWorkGraphNodes(a: WorkGraphNode, b: WorkGraphNode): number {
+  const statusRank = rankWorkGraphStatus(a.status) - rankWorkGraphStatus(b.status);
+  if (statusRank !== 0) return statusRank;
+  const timeRank = parseTime(b.updatedAt ?? b.startedAt) - parseTime(a.updatedAt ?? a.startedAt);
+  if (timeRank !== 0) return timeRank;
+  return a.label.localeCompare(b.label);
+}
+
+function rankWorkGraphStatus(status: WorkGraphStatus): number {
+  if (status === "failed" || status === "lost") return 0;
+  if (status === "running" || status === "active") return 1;
+  if (status === "queued") return 2;
+  if (status === "scheduled") return 3;
+  if (status === "idle") return 4;
+  if (status === "completed") return 5;
+  return 6;
+}
+
+function isActiveWorkGraphStatus(status: WorkGraphStatus): boolean {
+  return status === "active" || status === "running" || status === "queued";
+}
+
+function normalizeWorkStatusText(status: string | undefined): "running" | "queued" | "completed" | "failed" | "lost" | undefined {
+  if (!status) return undefined;
+  const normalized = status.toLowerCase().replace(/[ -]/g, "_");
+  if (normalized === "running" || normalized === "active" || normalized === "processing" || normalized === "streaming") {
+    return "running";
+  }
+  if (normalized === "queued" || normalized === "pending") return "queued";
+  if (
+    normalized === "completed" ||
+    normalized === "complete" ||
+    normalized === "done" ||
+    normalized === "final" ||
+    normalized === "success" ||
+    normalized === "succeeded"
+  ) {
+    return "completed";
+  }
+  if (normalized === "failed" || normalized === "failure" || normalized === "error") return "failed";
+  if (normalized === "timeout" || normalized === "timed_out" || normalized === "lost" || normalized === "stale") return "lost";
+  return undefined;
+}
+
+function sessionKind(key: string): string {
+  const parts = key.split(":");
+  if (parts.length >= 3 && parts[0] === "agent") return parts[2] ?? "session";
+  if (parts.length >= 4 && parts[0] === "session" && parts[1] === "agent") return parts[2] ?? "session";
+  return parts[2] ?? "session";
 }
 
 function filterMeaningfulEvents(events: TimelineEvent[]): TimelineEvent[] {
