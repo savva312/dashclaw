@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useAppState } from "../context";
 import {
   buildDashboardModel,
@@ -15,8 +16,20 @@ function formatUptime(ms?: number): string {
   return `${h}h ${m}m`;
 }
 
+function formatAge(iso?: string): string {
+  if (!iso) return "never";
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "unknown";
+  const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m ago`;
+}
+
 export function CommandCenterPage() {
-  const { snapshot, timeline, loading, error, refresh } = useAppState();
+  const { snapshot, timeline, loading, error, refresh, liveConnected } = useAppState();
 
   if (loading && !snapshot) return <p>Loading…</p>;
   if (error) return <p className="badge error">{error}</p>;
@@ -24,6 +37,9 @@ export function CommandCenterPage() {
 
   const s = snapshot!;
   const model = buildDashboardModel(s, timeline);
+  const lastMeaningfulEvent = [...model.recentEvents].sort(
+    (a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp),
+  )[0];
 
   return (
     <>
@@ -31,6 +47,8 @@ export function CommandCenterPage() {
         <h1 className="page-title">Command Center</h1>
         <button className="btn" type="button" onClick={() => void refresh()}>Refresh</button>
       </div>
+
+      <RuntimeStateCard model={model} liveConnected={liveConnected} />
 
       <InterventionCard model={model.interventionSummary} />
 
@@ -43,6 +61,10 @@ export function CommandCenterPage() {
             </span>
           </div>
           <div className="stat-label">v{s.health?.version ?? "—"} · uptime {formatUptime(s.health?.uptimeMs)}</div>
+          <div className="stat-label">
+            Snapshot {formatAge(s.updatedAt)} · event {formatAge(lastMeaningfulEvent?.timestamp)}
+            {model.isStale ? " · stale" : model.isLive ? " · live" : " · verify"}
+          </div>
         </div>
         <div className="card">
           <h3>Active Runs</h3>
@@ -79,7 +101,7 @@ export function CommandCenterPage() {
               <tbody>
                 {s.agents.map((a) => (
                   <tr key={a.id}>
-                    <td>{a.name ?? a.id}</td>
+                    <td><Link to={`/agents/${encodeURIComponent(a.id)}`}>{a.name ?? a.id}</Link></td>
                     <td className="mono">{a.model ?? "—"}</td>
                     <td>{a.runtime ?? "—"}</td>
                   </tr>
@@ -100,9 +122,9 @@ export function CommandCenterPage() {
               <tbody>
                 {s.tasks.slice(0, 8).map((t) => (
                   <tr key={t.id}>
-                    <td>{t.title ?? t.id}</td>
+                    <td><Link to={`/tasks/${encodeURIComponent(t.id)}`}>{t.title ?? t.id}</Link></td>
                     <td><span className={`badge ${t.status === "running" ? "ok" : t.status === "failed" ? "error" : "neutral"}`}>{t.status}</span></td>
-                    <td>{t.agentId ?? "—"}</td>
+                    <td>{t.agentId ? <Link to={`/agents/${encodeURIComponent(t.agentId)}`}>{t.agentId}</Link> : "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -111,6 +133,31 @@ export function CommandCenterPage() {
         </div>
       </div>
     </>
+  );
+}
+
+function RuntimeStateCard({
+  model,
+  liveConnected,
+}: {
+  model: ReturnType<typeof buildDashboardModel>;
+  liveConnected: boolean;
+}) {
+  const status = model.runtimeStatus;
+  return (
+    <div className={`runtime-state-card runtime-state-card-${status.tone}`}>
+      <div>
+        <div className="runtime-state-kicker">Runtime state</div>
+        <strong>{status.label}</strong>
+        <p>{status.summary}</p>
+      </div>
+      <div className="runtime-state-meta">
+        <span className={`badge ${badgeClassForRuntimeTone(status.tone)}`}>
+          {status.empty ? "empty" : status.tone}
+        </span>
+        <span className="stat-label">event stream {liveConnected ? "connected" : "polling"}</span>
+      </div>
+    </div>
   );
 }
 
@@ -157,7 +204,7 @@ function InterventionCard({ model }: { model: ReturnType<typeof buildDashboardMo
                 <td><span className={`badge ${badgeClassForTone(item.tone)}`}>{item.tone}</span></td>
                 <td>{item.category}</td>
                 <td>
-                  {item.links.task ? <a href={item.links.task}>{item.title}</a> : item.links.approval ? <a href={item.links.approval}>{item.title}</a> : item.title}
+                  {item.links.task ? <Link to={item.links.task}>{item.title}</Link> : item.links.approval ? <Link to={item.links.approval}>{item.title}</Link> : item.title}
                   {item.summary ? <div className="stat-label">{item.summary}</div> : null}
                 </td>
                 <td>{item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : "—"}</td>
@@ -209,7 +256,15 @@ function WorkGraphNodeRow({ node, depth }: { node: WorkGraphNode; depth: number 
         <span className="mono" style={{ color: "var(--ink-muted)", minWidth: "5.5rem" }}>
           {node.role}
         </span>
-        <strong>{node.label}</strong>
+        {node.links.task ? (
+          <strong><Link to={node.links.task}>{node.label}</Link></strong>
+        ) : node.links.session ? (
+          <strong><Link to={node.links.session}>{node.label}</Link></strong>
+        ) : node.links.agent ? (
+          <strong><Link to={node.links.agent}>{node.label}</Link></strong>
+        ) : (
+          <strong>{node.label}</strong>
+        )}
         {node.currentTool ? <span className="stat-label">· {node.currentTool}</span> : null}
       </div>
       {node.children.length > 0 ? (
@@ -221,6 +276,11 @@ function WorkGraphNodeRow({ node, depth }: { node: WorkGraphNode; depth: number 
       ) : null}
     </div>
   );
+}
+
+function badgeClassForRuntimeTone(tone: ReturnType<typeof buildDashboardModel>["runtimeStatus"]["tone"]): "ok" | "error" | "warn" | "neutral" {
+  if (tone === "ok") return "ok";
+  return badgeClassForTone(tone);
 }
 
 function badgeClassForStatus(status: WorkGraphStatus): "ok" | "error" | "warn" | "neutral" {

@@ -74,6 +74,40 @@ describe("dashboard selectors", () => {
     expect(model.agents[0]?.state).toBe("working");
   });
 
+  it("summarizes empty, disconnected, degraded, and stale dashboard states", () => {
+    const empty = buildDashboardModel(
+      snapshot({ agents: [], health: { ok: true }, updatedAt: "2026-06-22T11:59:55.000Z" }),
+      [],
+      { nowMs: now },
+    );
+    expect(empty.runtimeStatus).toMatchObject({ tone: "info", label: "No runtime work yet", empty: true });
+    expect(empty.isLive).toBe(true);
+
+    const disconnected = buildDashboardModel(
+      snapshot({ connectionState: "disconnected", updatedAt: "2026-06-22T11:59:55.000Z" }),
+      [],
+      { nowMs: now },
+    );
+    expect(disconnected.runtimeStatus).toMatchObject({ tone: "error", label: "Gateway disconnected" });
+    expect(disconnected.attention.map((item) => item.kind)).toContain("gateway");
+
+    const degraded = buildDashboardModel(
+      snapshot({ health: { ok: true, degraded: true }, updatedAt: "2026-06-22T11:59:55.000Z" }),
+      [],
+      { nowMs: now },
+    );
+    expect(degraded.runtimeStatus).toMatchObject({ tone: "warn", label: "Gateway degraded" });
+    expect(degraded.isLive).toBe(false);
+
+    const stale = buildDashboardModel(
+      snapshot({ updatedAt: "2026-06-22T11:58:00.000Z" }),
+      [],
+      { nowMs: now },
+    );
+    expect(stale.runtimeStatus).toMatchObject({ tone: "warn", label: "Snapshot stale" });
+    expect(stale.isStale).toBe(true);
+  });
+
   it("surfaces failures, pending approvals, stale sessions, and gateway issues as attention", () => {
     const model = buildDashboardModel(
       snapshot({

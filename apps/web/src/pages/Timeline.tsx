@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useAppState } from "../context";
 
 function formatTime(iso: string): string {
@@ -27,10 +28,18 @@ export function TimelinePage() {
               <div>
                 <strong>{e.title}</strong>
                 {e.summary && <div style={{ color: "var(--text-muted)", fontSize: "0.85rem" }}>{e.summary}</div>}
-                {(e.sessionKey || e.agentId) && (
-                  <div className="mono" style={{ color: "var(--text-muted)", marginTop: "0.25rem" }}>
-                    {e.agentId && `agent:${e.agentId} `}
-                    {e.sessionKey && `session:${e.sessionKey}`}
+                {(e.sessionKey || e.agentId || e.taskId || e.runId) && (
+                  <div className="ops-item-meta" style={{ marginTop: "0.35rem" }}>
+                    {e.agentId ? <Link to={`/agents/${encodeURIComponent(e.agentId)}`}>agent:{e.agentId}</Link> : null}
+                    {e.agentId && e.sessionKey ? (
+                      <Link to={`/agents/${encodeURIComponent(e.agentId)}/sessions/${encodeURIComponent(e.sessionKey)}`}>
+                        session:{e.sessionKey}
+                      </Link>
+                    ) : e.sessionKey ? (
+                      <span className="mono">session:{e.sessionKey}</span>
+                    ) : null}
+                    {e.taskId ? <Link to={`/tasks/${encodeURIComponent(e.taskId)}`}>task:{e.taskId}</Link> : null}
+                    {e.runId ? <span className="mono">run:{e.runId}</span> : null}
                   </div>
                 )}
               </div>
