@@ -13,6 +13,7 @@ import { AgentSessionsView } from "./pages/agents/AgentSessionsView";
 import { AgentSessionDetail } from "./pages/agents/AgentSessionDetail";
 import { SessionsPage } from "./pages/Sessions";
 import { TasksPage } from "./pages/Tasks";
+import { TaskDetailPage } from "./pages/TaskDetail";
 import { CronPage } from "./pages/Cron";
 import { ApprovalsPage } from "./pages/Approvals";
 import { AdminPage } from "./pages/Admin";
@@ -47,6 +48,7 @@ createRoot(document.getElementById("root")!).render(
               <Route path="sessions" element={<SessionsPage />} />
               <Route path="cron" element={<CronPage />} />
               <Route path="tasks" element={<TasksPage />} />
+              <Route path="tasks/:taskId" element={<TaskDetailPage />} />
               <Route path="approvals" element={<ApprovalsPage />} />
               <Route path="admin" element={<AdminPage />} />
             </Route>

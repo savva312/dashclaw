@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useAppState } from "../context";
 
 export function TasksPage() {
@@ -33,10 +34,18 @@ export function TasksPage() {
             ) : (
               tasks.map((t) => (
                 <tr key={t.id}>
-                  <td>{t.title ?? t.id}</td>
+                  <td>
+                    <Link to={`/tasks/${encodeURIComponent(t.id)}`}>{t.title ?? t.id}</Link>
+                  </td>
                   <td><span className={`badge ${t.status === "running" ? "ok" : t.status === "failed" ? "error" : "neutral"}`}>{t.status}</span></td>
-                  <td>{t.agentId ?? "—"}</td>
-                  <td className="mono">{t.sessionKey ?? "—"}</td>
+                  <td>{t.agentId ? <Link to={`/agents/${encodeURIComponent(t.agentId)}`}>{t.agentId}</Link> : "—"}</td>
+                  <td className="mono">
+                    {t.agentId && t.sessionKey ? (
+                      <Link to={`/agents/${encodeURIComponent(t.agentId)}/sessions/${encodeURIComponent(t.sessionKey)}`}>{t.sessionKey}</Link>
+                    ) : (
+                      t.sessionKey ?? "—"
+                    )}
+                  </td>
                   <td className="mono">{t.runId ?? "—"}</td>
                 </tr>
               ))

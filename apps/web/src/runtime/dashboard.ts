@@ -136,11 +136,19 @@ export interface InterventionSummary {
   items: AttentionItem[];
 }
 
+export interface RuntimeStatusSummary {
+  tone: AttentionTone | "ok";
+  label: string;
+  summary: string;
+  empty: boolean;
+}
+
 export interface DashboardModel {
   generatedAt: string;
   connectionState: RuntimeSnapshot["connectionState"];
   isLive: boolean;
   isStale: boolean;
+  runtimeStatus: RuntimeStatusSummary;
   summary: {
     totalAgents: number;
     workingAgents: number;
@@ -222,13 +230,15 @@ export function buildDashboardModel(
     failedTasks,
   });
   const isStale = isOlderThan(snapshot.updatedAt, nowMs, snapshotStaleAfterMs);
+  const isLive = snapshot.connectionState === "connected" && !isStale && snapshot.health?.degraded !== true;
   const workingAgents = agents.filter((agent) => agent.state === "working").length;
 
   return {
     generatedAt: new Date(nowMs).toISOString(),
     connectionState: snapshot.connectionState,
-    isLive: snapshot.connectionState === "connected" && !isStale && snapshot.health?.degraded !== true,
+    isLive,
     isStale,
+    runtimeStatus: buildRuntimeStatusSummary(snapshot, { isLive, isStale, nowMs }),
     summary: {
       totalAgents: snapshot.agents.length,
       workingAgents,
@@ -243,6 +253,71 @@ export function buildDashboardModel(
     attention,
     interventionSummary: buildInterventionSummary(attention),
     recentEvents,
+  };
+}
+
+function buildRuntimeStatusSummary(
+  snapshot: RuntimeSnapshot,
+  context: { isLive: boolean; isStale: boolean; nowMs: number },
+): RuntimeStatusSummary {
+  const empty =
+    snapshot.agents.length === 0 &&
+    snapshot.sessions.length === 0 &&
+    snapshot.tasks.length === 0 &&
+    snapshot.cronJobs.length === 0 &&
+    snapshot.approvals.length === 0 &&
+    snapshot.nodes.length === 0;
+
+  if (snapshot.connectionState !== "connected") {
+    return {
+      tone: "error",
+      label: "Gateway disconnected",
+      summary: `Dashclaw has a ${snapshot.connectionState} gateway connection; data may be cached from ${formatAge(snapshot.updatedAt, context.nowMs)} ago.`,
+      empty,
+    };
+  }
+
+  if (snapshot.health?.ok === false) {
+    return {
+      tone: "error",
+      label: "Gateway unhealthy",
+      summary: "The gateway health check is failing. Inspect the access/intervention queue before trusting runtime state.",
+      empty,
+    };
+  }
+
+  if (snapshot.health?.degraded === true) {
+    return {
+      tone: "warn",
+      label: "Gateway degraded",
+      summary: "Dashclaw is connected, but the gateway reports degraded health. Some runtime surfaces may be incomplete.",
+      empty,
+    };
+  }
+
+  if (context.isStale) {
+    return {
+      tone: "warn",
+      label: "Snapshot stale",
+      summary: `The last runtime snapshot arrived ${formatAge(snapshot.updatedAt, context.nowMs)} ago. Refresh or check the event stream if this looks wrong.`,
+      empty,
+    };
+  }
+
+  if (empty) {
+    return {
+      tone: "info",
+      label: "No runtime work yet",
+      summary: "Gateway is live, but it has not reported agents, sessions, tasks, approvals, cron jobs, or nodes yet.",
+      empty,
+    };
+  }
+
+  return {
+    tone: context.isLive ? "ok" : "info",
+    label: context.isLive ? "Gateway live" : "Runtime state needs review",
+    summary: "Dashboard state is current. Use graph, intervention, and ledger links to drill into active work.",
+    empty,
   };
 }
 

@@ -471,6 +471,64 @@ textarea {
   text-align: center;
 }
 
+.runtime-state-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+  margin-bottom: 1.5rem;
+  padding: 1rem 1.1rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+
+.runtime-state-card strong {
+  display: block;
+  font-size: 1rem;
+}
+
+.runtime-state-card p {
+  margin: 0.35rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.runtime-state-kicker {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  margin-bottom: 0.25rem;
+  text-transform: uppercase;
+}
+
+.runtime-state-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+
+.runtime-state-card-ok {
+  border-color: rgba(34, 197, 94, 0.24);
+}
+
+.runtime-state-card-info {
+  border-color: var(--border);
+}
+
+.runtime-state-card-warn {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.08), var(--bg-panel) 45%);
+}
+
+.runtime-state-card-error {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.08), var(--bg-panel) 45%);
+}
+
 .office-page {
   max-width: 1200px;
 }

@@ -27,9 +27,16 @@ export function AgentSessionDetail() {
 
   const agent = snapshot?.agents.find((a) => a.id === agentId);
   const session = snapshot?.sessions.find((s) => s.key === sessionKey);
-  const relatedTask = snapshot?.tasks.find(
-    (task) => task.sessionKey === sessionKey && (task.status === "running" || task.status === "queued"),
+  const relatedTasks = useMemo(
+    () =>
+      snapshot?.tasks.filter((task) => task.sessionKey === sessionKey).sort((a, b) => {
+        const aTime = Date.parse(a.startedAt ?? a.endedAt ?? "");
+        const bTime = Date.parse(b.startedAt ?? b.endedAt ?? "");
+        return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime);
+      }) ?? [],
+    [snapshot?.tasks, sessionKey],
   );
+  const relatedTask = relatedTasks.find((task) => task.status === "running" || task.status === "queued") ?? relatedTasks[0];
 
   const sessionEvents = useMemo(
     () =>
@@ -120,7 +127,9 @@ export function AgentSessionDetail() {
         {relatedTask ? (
           <div className="detail-pill detail-pill-task">
             <span>Task</span>
-            <strong className="detail-pill-value">{relatedTask.title ?? relatedTask.id}</strong>
+            <strong className="detail-pill-value">
+              <Link to={`/tasks/${encodeURIComponent(relatedTask.id)}`}>{relatedTask.title ?? relatedTask.id}</Link>
+            </strong>
           </div>
         ) : null}
       </div>
@@ -163,6 +172,13 @@ export function AgentSessionDetail() {
                     </div>
                     <strong>{event.title}</strong>
                     {event.summary ? <p className="office-muted">{event.summary}</p> : null}
+                    {(event.taskId || event.agentId || event.runId) ? (
+                      <div className="ops-item-meta">
+                        {event.agentId ? <Link to={`/agents/${encodeURIComponent(event.agentId)}`}>agent:{event.agentId}</Link> : null}
+                        {event.taskId ? <Link to={`/tasks/${encodeURIComponent(event.taskId)}`}>task:{event.taskId}</Link> : null}
+                        {event.runId ? <span className="mono">run:{event.runId}</span> : null}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               ))}
