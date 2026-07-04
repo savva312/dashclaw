@@ -334,6 +334,22 @@ describe("dashboard selectors", () => {
       nextAction: "No action needed; open details if context is useful.",
     });
     expect(model.controlCenter.attention.some((item) => item.id === "task-long-running:task-release")).toBe(true);
+
+    const activeActions = model.controlCenter.activeNow[0]?.operatorActions ?? [];
+    expect(activeActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "open-session", enabled: true, href: "/agents/main/sessions/agent%3Amain%3Arelease" }),
+      expect.objectContaining({ id: "steer-session", enabled: false, source: "declared-rpc" }),
+      expect.objectContaining({ id: "cancel-task", enabled: false, source: "declared-rpc" }),
+    ]));
+    expect(activeActions.find((action) => action.id === "steer-session")?.disabledReason).toContain("steering payload");
+    expect(activeActions.find((action) => action.id === "cancel-task")?.disabledReason).toContain("cancellation policy");
+
+    const approvalActions = model.controlCenter.waitingOnMe[0]?.operatorActions ?? [];
+    expect(approvalActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "open-approval", enabled: true, href: "/approvals" }),
+      expect.objectContaining({ id: "approve-approval", enabled: false, requiresConfirmation: true }),
+    ]));
+    expect(approvalActions.find((action) => action.id === "approve-approval")?.disabledReason).toContain("confirmation metadata");
   });
 
   it("keeps active sessions without tasks visible as work", () => {
@@ -1314,5 +1330,33 @@ describe("dashboard selectors", () => {
       tone: "warn",
     });
     expect(model.reviewQueue.summary).toMatchObject({ needsReview: 1, stale: 1 });
+  });
+
+  it("adds disabled work-item actions with concrete missing-metadata reasons", () => {
+    const model = buildDashboardModel(
+      snapshot({
+        agents: [],
+        tasks: [
+          {
+            id: "task-orphan-failed",
+            status: "failed",
+            title: "Orphaned failure",
+            endedAt: "2026-06-22T11:58:00.000Z",
+            error: "lost context",
+          },
+        ],
+      }),
+      [],
+      { nowMs: now },
+    );
+
+    const itemActions = model.workBoard.items[0]?.operatorActions ?? [];
+    expect(itemActions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "open-task", enabled: true, href: "/tasks/task-orphan-failed" }),
+      expect.objectContaining({ id: "open-session", enabled: false, source: "missing-metadata" }),
+      expect.objectContaining({ id: "retry-task", enabled: false, source: "missing-metadata" }),
+    ]));
+    expect(itemActions.find((action) => action.id === "open-session")?.disabledReason).toBe("Missing session key metadata for this item.");
+    expect(itemActions.find((action) => action.id === "retry-task")?.disabledReason).toContain("No retry/recover RPC");
   });
 });

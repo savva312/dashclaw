@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAppState } from "../context";
-import { buildDashboardModel, type AttentionTone, type ReviewItem, type WorkBoardColumn, type WorkItem } from "../runtime/dashboard";
+import { buildDashboardModel, type AttentionTone, type OperatorAction, type ReviewItem, type WorkBoardColumn, type WorkItem } from "../runtime/dashboard";
 
 function badgeClassForTone(tone: AttentionTone | "ok") {
   if (tone === "ok") return "ok";
@@ -281,6 +281,7 @@ function WorkBoardCard({ item, compact = false }: { item: WorkItem; compact?: bo
         </div>
       </dl>
       {item.currentAction ? <div className="work-board-next">Current: {item.currentAction}</div> : null}
+      {item.operatorActions?.length ? <OperatorActionChips actions={item.operatorActions} /> : null}
       {incomplete ? <div className="badge warn">{item.lineage.diagnostic ?? "lineage incomplete"}</div> : null}
       <div className="work-board-links">
         {item.links.task ? <Link to={item.links.task}>Task</Link> : null}
@@ -290,5 +291,23 @@ function WorkBoardCard({ item, compact = false }: { item: WorkItem; compact?: bo
         <Link to="/graph">Graph</Link>
       </div>
     </article>
+  );
+}
+
+function OperatorActionChips({ actions }: { actions: OperatorAction[] }) {
+  const visible = actions.filter((action) => action.enabled || action.kind !== "navigation").slice(0, 5);
+  if (visible.length === 0) return null;
+  return (
+    <div className="operator-action-chips" aria-label="Safe action affordances">
+      {visible.map((action) =>
+        action.enabled && action.href ? (
+          <Link key={action.id} className="operator-action-chip" to={action.href}>{action.label}</Link>
+        ) : (
+          <span key={action.id} className="operator-action-chip operator-action-chip-disabled" title={action.disabledReason ?? "Action unavailable"}>
+            {action.label} unavailable: {action.disabledReason ?? "missing backend action metadata"}
+          </span>
+        ),
+      )}
+    </div>
   );
 }

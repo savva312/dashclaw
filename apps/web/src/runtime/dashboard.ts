@@ -31,6 +31,39 @@ export interface RuntimeLinks {
   discord?: string;
 }
 
+export type OperatorActionId =
+  | "open-work-board"
+  | "open-graph"
+  | "open-agent"
+  | "open-session"
+  | "open-task"
+  | "open-approval"
+  | "open-timeline"
+  | "steer-session"
+  | "abort-session"
+  | "cancel-task"
+  | "retry-task"
+  | "approve-approval"
+  | "deny-approval";
+
+export type OperatorActionKind = "navigation" | "steering" | "approval" | "recovery";
+export type OperatorActionRisk = "none" | "medium" | "high";
+export type OperatorActionSource = "runtime-link" | "declared-rpc" | "missing-metadata";
+
+export interface OperatorAction {
+  id: OperatorActionId;
+  label: string;
+  kind: OperatorActionKind;
+  enabled: boolean;
+  risk: OperatorActionRisk;
+  source: OperatorActionSource;
+  href?: string;
+  rpcMethod?: string;
+  rpcParams?: Record<string, string>;
+  requiresConfirmation?: boolean;
+  disabledReason?: string;
+}
+
 export interface ActiveWorkItem {
   id: string;
   label: string;
@@ -159,6 +192,7 @@ export interface ControlCenterItem {
   updatedAt?: string;
   completedAt?: string;
   links: RuntimeLinks;
+  operatorActions?: OperatorAction[];
   agent?: AgentSummary;
   session?: SessionSummary;
   task?: TaskSummary;
@@ -204,6 +238,7 @@ export interface WorkItem {
   lineage: WorkItemLineage;
   evidence: WorkItemEvidence;
   links: RuntimeLinks;
+  operatorActions?: OperatorAction[];
 }
 
 export interface WorkBoardColumn {
@@ -578,6 +613,7 @@ function buildControlCenterOverview(
     agent: item.agent,
     session: item.session,
     task: item.task,
+    operatorActions: buildOperatorActions({ links: item.links, agent: item.agent, session: item.session, task: item.task }),
   }) satisfies ControlCenterItem);
 
   const waitingOnMe = context.pendingApprovals
@@ -586,6 +622,7 @@ function buildControlCenterOverview(
       const agentId = approval.agentId ?? session?.agentId;
       const agent = agentId ? agentsById.get(agentId) : undefined;
       const highRisk = isHighRiskApproval(approval);
+      const links = linksFor({ agentId, sessionKey: session?.key ?? approval.sessionKey, approvalId: approval.id });
       return {
         id: `approval:${approval.id}`,
         lane: "waitingOnMe",
@@ -598,10 +635,11 @@ function buildControlCenterOverview(
         currentAction: approval.command,
         nextAction: highRisk ? "Review command carefully before approving or denying." : "Approve or deny the pending request.",
         updatedAt: approval.requestedAt,
-        links: linksFor({ agentId, sessionKey: session?.key ?? approval.sessionKey, approvalId: approval.id }),
+        links,
         agent,
         session,
         approval,
+        operatorActions: buildOperatorActions({ links, agent, session, approval }),
       } satisfies ControlCenterItem;
     })
     .sort(compareControlCenterItems);
@@ -1052,6 +1090,18 @@ function workItemFromSeed(
       taskId: primaryTask?.id,
       approvalId: primaryApproval?.status === "pending" ? primaryApproval.id : undefined,
     }),
+    operatorActions: buildOperatorActions({
+      links: linksFor({
+        agentId: primaryAgentId,
+        sessionKey: primarySessionKey,
+        taskId: primaryTask?.id,
+        approvalId: primaryApproval?.status === "pending" ? primaryApproval.id : undefined,
+      }),
+      agent: agents[0],
+      session: primarySession,
+      task: primaryTask,
+      approval: primaryApproval,
+    }),
   };
 }
 
@@ -1206,6 +1256,14 @@ function controlCenterItemFromAttention(item: AttentionItem, lane: ControlCenter
     nextAction: nextActionForAttention(item),
     updatedAt: item.timestamp,
     links: item.links,
+    operatorActions: buildOperatorActions({
+      links: item.links,
+      agent: item.agent,
+      session: item.session,
+      task: item.task,
+      approval: item.approval,
+      includeGlobalLinks: false,
+    }),
     agent: item.agent,
     session: item.session,
     task: item.task,
@@ -1223,6 +1281,7 @@ function controlCenterItemFromTask(
   const agentId = task.agentId ?? session?.agentId;
   const agent = agentId ? agentsById.get(agentId) : undefined;
   const failed = task.status === "failed" || task.status === "timed_out";
+  const links = linksFor({ agentId, sessionKey: session?.key ?? task.sessionKey, taskId: task.id });
   return {
     id: `task:${task.id}`,
     lane,
@@ -1236,7 +1295,8 @@ function controlCenterItemFromTask(
     startedAt: task.startedAt,
     updatedAt: task.endedAt ?? task.startedAt,
     completedAt: task.endedAt,
-    links: linksFor({ agentId, sessionKey: session?.key ?? task.sessionKey, taskId: task.id }),
+    links,
+    operatorActions: buildOperatorActions({ links, agent, session, task }),
     agent,
     session,
     task,
@@ -1460,6 +1520,140 @@ export function linksFor(input: {
     task: input.taskId ? `/tasks/${encodeURIComponent(input.taskId)}` : undefined,
     timeline: "/timeline",
     approval: input.approvalId ? "/approvals" : undefined,
+  };
+}
+
+export function buildOperatorActions(input: {
+  links: RuntimeLinks;
+  agent?: AgentSummary;
+  session?: SessionSummary;
+  task?: TaskSummary;
+  approval?: ApprovalSummary;
+  includeGlobalLinks?: boolean;
+}): OperatorAction[] {
+  const actions: OperatorAction[] = input.includeGlobalLinks === false ? [] : [
+    navigationAction("open-work-board", "Open work board", "/work", "Missing work board route metadata."),
+    navigationAction("open-graph", "Open graph", "/graph", "Missing graph route metadata."),
+  ];
+
+  actions.push(
+    navigationAction("open-agent", "Open agent", input.links.agent, "Missing agent id metadata for this item."),
+    navigationAction(
+      "open-session",
+      "Open session",
+      input.links.session,
+      input.session?.key || input.task?.sessionKey || input.approval?.sessionKey
+        ? "Missing agent id metadata required to build the session route."
+        : "Missing session key metadata for this item.",
+    ),
+    navigationAction("open-task", "Open task", input.links.task, "Missing task id metadata for this item."),
+    navigationAction("open-approval", "Open approval queue", input.links.approval, "No pending approval id is associated with this item."),
+    navigationAction("open-timeline", "Open timeline", input.links.timeline, "Missing timeline route metadata."),
+  );
+
+  const sessionKey = input.session?.key ?? input.task?.sessionKey ?? input.approval?.sessionKey;
+  if (sessionKey) {
+    actions.push(disabledRpcAction(
+      "steer-session",
+      "Steer session",
+      "steering",
+      "medium",
+      "sessions.steer",
+      { key: sessionKey },
+      "sessions.steer is declared, but the dashboard lacks safe steering payload and confirmation metadata.",
+    ));
+    actions.push(disabledRpcAction(
+      "abort-session",
+      "Abort session",
+      "steering",
+      "medium",
+      "sessions.abort",
+      { key: sessionKey },
+      "sessions.abort is declared, but Control Center needs explicit abort policy and confirmation copy before exposing it.",
+    ));
+  } else if (input.task?.status === "running" || input.task?.status === "queued" || input.approval?.status === "pending") {
+    actions.push(disabledMissingAction("steer-session", "Steer session", "steering", "medium", "Missing session key metadata."));
+    actions.push(disabledMissingAction("abort-session", "Abort session", "steering", "medium", "Missing session key metadata."));
+  }
+
+  if (input.task?.status === "running" || input.task?.status === "queued") {
+    actions.push(disabledRpcAction(
+      "cancel-task",
+      "Cancel task",
+      "steering",
+      "medium",
+      "tasks.cancel",
+      { id: input.task.id },
+      "tasks.cancel is declared, but Control Center needs cancellation policy and confirmation metadata before exposing it.",
+    ));
+  }
+
+  if (input.task?.status === "failed" || input.task?.status === "timed_out") {
+    actions.push(disabledMissingAction(
+      "retry-task",
+      "Retry / recover task",
+      "recovery",
+      "medium",
+      "No retry/recover RPC or idempotency metadata is declared for failed tasks.",
+    ));
+  }
+
+  if (input.approval?.status === "pending") {
+    const method = input.approval.kind === "plugin" ? "plugin.approval.resolve" : "exec.approval.resolve";
+    const risk = isHighRiskApproval(input.approval) ? "high" : "medium";
+    const disabledReason = "Approval resolution RPC exists, but Control Center routes to the approval queue until command risk and confirmation metadata are shown inline.";
+    actions.push(disabledRpcAction("approve-approval", "Approve request", "approval", risk, method, { id: input.approval.id, decision: "approved" }, disabledReason));
+    actions.push(disabledRpcAction("deny-approval", "Deny request", "approval", risk, method, { id: input.approval.id, decision: "denied" }, disabledReason));
+  }
+
+  return actions;
+}
+
+function navigationAction(id: OperatorActionId, label: string, href: string | undefined, disabledReason: string): OperatorAction {
+  return href
+    ? { id, label, kind: "navigation", enabled: true, risk: "none", source: "runtime-link", href }
+    : { id, label, kind: "navigation", enabled: false, risk: "none", source: "missing-metadata", disabledReason };
+}
+
+function disabledRpcAction(
+  id: OperatorActionId,
+  label: string,
+  kind: OperatorActionKind,
+  risk: OperatorActionRisk,
+  rpcMethod: string,
+  rpcParams: Record<string, string>,
+  disabledReason: string,
+): OperatorAction {
+  return {
+    id,
+    label,
+    kind,
+    enabled: false,
+    risk,
+    source: "declared-rpc",
+    rpcMethod,
+    rpcParams,
+    requiresConfirmation: true,
+    disabledReason,
+  };
+}
+
+function disabledMissingAction(
+  id: OperatorActionId,
+  label: string,
+  kind: OperatorActionKind,
+  risk: OperatorActionRisk,
+  disabledReason: string,
+): OperatorAction {
+  return {
+    id,
+    label,
+    kind,
+    enabled: false,
+    risk,
+    source: "missing-metadata",
+    requiresConfirmation: risk !== "none",
+    disabledReason,
   };
 }
 
@@ -1745,7 +1939,18 @@ function buildAttentionItems(
     });
   }
 
-  return items.sort(compareAttention);
+  return items
+    .map((item) => ({
+      ...item,
+      operatorActions: buildOperatorActions({
+        links: item.links,
+        agent: item.agent,
+        session: item.session,
+        task: item.task,
+        approval: item.approval,
+      }),
+    }))
+    .sort(compareAttention);
 }
 
 function buildSessionParentHints(timeline: TimelineEvent[]): Map<string, string> {
