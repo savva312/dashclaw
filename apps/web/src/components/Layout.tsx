@@ -8,6 +8,7 @@ const NAV = [
     items: [
       { to: "/", label: "Command Center", end: true },
       { to: "/timeline", label: "Live Timeline" },
+      { to: "/work", label: "Work Board" },
       { to: "/graph", label: "Work Graph" },
     ],
   },

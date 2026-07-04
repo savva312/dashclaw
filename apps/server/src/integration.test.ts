@@ -57,6 +57,34 @@ describe("server integration", () => {
     expect(degraded.tasks.some((task) => task.id === "task-delivery-lost")).toBe(true);
   });
 
+  it("builds snapshot from Discord workflow fake gateway scenario", async () => {
+    fake = await startFakeGateway({ token: "test-token", scenario: "discord-workflow" });
+    store = new RuntimeStore(join(tmpdir(), `dashclaw-${randomUUID()}.db`));
+
+    bridge = new GatewayBridge({
+      url: fake.url,
+      token: "test-token",
+      store,
+    });
+
+    await bridge.start();
+    const snapshot = await bridge.refreshSnapshot();
+
+    expect(snapshot.sessions).toHaveLength(7);
+    expect(snapshot.tasks).toHaveLength(7);
+    expect(snapshot.tasks.filter((task) => task.status === "running" || task.status === "queued")).toHaveLength(4);
+    expect(snapshot.tasks.filter((task) => task.status === "completed")).toHaveLength(1);
+    expect(snapshot.failedTaskCount).toBe(2);
+    expect(snapshot.pendingApprovalCount).toBe(1);
+    expect(snapshot.sessions.find((session) => session.key === "agent:fixture-model:subagent:TASK-039-fixture-model-lane")).toMatchObject({
+      parentSessionKey: "agent:dashclaw:discord:thread:work-board",
+    });
+    expect(snapshot.tasks.find((task) => task.id === "task-lost-background-result")).toMatchObject({
+      status: "timed_out",
+      sessionKey: "agent:fixture-model:subagent:missing-delivery",
+    });
+  });
+
   it("audits admin RPC calls", async () => {
     fake = await startFakeGateway({ token: "test-token" });
     store = new RuntimeStore(join(tmpdir(), `dashclaw-${randomUUID()}.db`));

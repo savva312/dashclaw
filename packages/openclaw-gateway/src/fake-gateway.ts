@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 
-export const FAKE_GATEWAY_SCENARIOS = ["idle", "busy", "failed", "approval-heavy", "degraded"] as const;
+export const FAKE_GATEWAY_SCENARIOS = ["idle", "busy", "failed", "approval-heavy", "degraded", "discord-workflow"] as const;
 export type FakeGatewayScenario = (typeof FAKE_GATEWAY_SCENARIOS)[number];
 
 export interface FakeGatewayOptions {
@@ -261,9 +261,119 @@ function buildScenarioData(scenario: FakeGatewayScenario): FakeGatewayScenarioDa
         nodes: [{ id: "node-phone", label: "Phone", connected: false, platform: "ios" }],
         logs: ["[warn] gateway degraded: event stream lagging", "[error] subagent delivery failed"],
       };
+    case "discord-workflow":
+      return discordWorkflowScenarioData(common);
     case "busy":
       return common;
   }
+}
+
+function discordWorkflowScenarioData(common: FakeGatewayScenarioData): FakeGatewayScenarioData {
+  const mainChannel = "agent:dashclaw:discord:channel:1519213500986036264";
+  const workBoardThread = "agent:dashclaw:discord:thread:work-board";
+  const completedThread = "agent:dashclaw:discord:thread:completed-summary";
+  const failedThread = "agent:dashclaw:discord:thread:failed-delivery";
+  const archivedThread = "agent:dashclaw:discord:thread:archived-context";
+  const subagentSession = "agent:fixture-model:subagent:TASK-039-fixture-model-lane";
+  const acpSession = "agent:coder:acp:TASK-039-coding-lane";
+  const missingParentThread = "agent:dashclaw:discord:thread:missing-original";
+
+  return {
+    ...common,
+    agents: [
+      { id: "dashclaw", name: "Dashclaw", model: "openclaw/default", runtime: "openclaw", workspace: "/workspace" },
+      { id: "fixture-model", name: "Fixture Model Lane", model: "openclaw/default", runtime: "openclaw", workspace: "/workspace" },
+      { id: "coder", name: "ACP Coding Lane", model: "openclaw/default", runtime: "openclaw", workspace: "/workspace" },
+      { id: "ops", name: "Ops Watch", model: "openclaw/default", runtime: "openclaw", workspace: "/workspace" },
+    ],
+    sessions: [
+      session(mainChannel, "dashclaw", "#dashclaw / main discussion", "running", -30_000, "run-channel-main", "message", {
+        channelId: "1519213500986036264",
+        channelName: "dashclaw",
+        platform: "discord",
+        permalink: "discord://channels/example/1519213500986036264",
+      }),
+      session(workBoardThread, "dashclaw", "thread: implement work board", "running", -45_000, "run-thread-work-board", "spawn_subagent", {
+        parentSessionKey: mainChannel,
+        channelId: "1519213500986036264",
+        threadId: "thread-work-board",
+        platform: "discord",
+        permalink: "discord://channels/example/1519213500986036264/thread-work-board",
+      }),
+      session(subagentSession, "fixture-model", "TASK-039 fixture/model lane", "running", -60_000, "run-subagent-fixture", "pnpm test", {
+        parentSessionKey: workBoardThread,
+        spawnedBy: workBoardThread,
+        requesterSessionKey: workBoardThread,
+      }),
+      session(acpSession, "coder", "ACP lane: fixture extension", "queued", -2 * 60_000, "run-acp-fixture", "waiting for approval", {
+        parentSessionKey: workBoardThread,
+        spawnedBy: workBoardThread,
+      }),
+      session(completedThread, "dashclaw", "thread: completed fixture summary", "completed", -20 * 60_000, undefined, undefined, {
+        parentSessionKey: mainChannel,
+        channelId: "1519213500986036264",
+        threadId: "thread-completed-summary",
+        platform: "discord",
+        finalSummary: "Fixture summary posted back to the task thread.",
+        permalink: "discord://channels/example/1519213500986036264/thread-completed-summary",
+      }),
+      session(failedThread, "dashclaw", "thread: investigate failed delivery", "failed", -12 * 60_000, undefined, undefined, {
+        parentSessionKey: mainChannel,
+        channelId: "1519213500986036264",
+        threadId: "thread-failed-delivery",
+        platform: "discord",
+        permalink: "discord://channels/example/1519213500986036264/thread-failed-delivery",
+      }),
+      session(archivedThread, "dashclaw", "thread: archived context", "completed", -3 * 60 * 60_000, undefined, undefined, {
+        parentSessionKey: mainChannel,
+        channelId: "1519213500986036264",
+        threadId: "thread-archived-context",
+        platform: "discord",
+        archived: true,
+        permalink: "discord://channels/example/1519213500986036264/thread-archived-context",
+      }),
+    ],
+    tasks: [
+      task("task-discord-main-triage", "running", "Coordinate Discord workflow triage", "dashclaw", mainChannel, "run-channel-main", -10 * 60_000, undefined, undefined, {
+        kind: "discord-channel",
+      }),
+      task("task-work-board", "running", "Implement work board fixture", "dashclaw", workBoardThread, "run-thread-work-board", -35 * 60_000, undefined, undefined, {
+        kind: "discord-thread",
+        parentSessionKey: mainChannel,
+      }),
+      task("task-fixture-model-lane", "running", "Inspect fake gateway runtime model", "fixture-model", subagentSession, "run-subagent-fixture", -8 * 60_000, undefined, undefined, {
+        kind: "subagent",
+        parentTaskId: "task-work-board",
+        parentSessionKey: workBoardThread,
+      }),
+      task("task-acp-review", "queued", "Review fixture extension", "coder", acpSession, "run-acp-fixture", -2 * 60_000, undefined, undefined, {
+        kind: "acp",
+        parentTaskId: "task-work-board",
+        parentSessionKey: workBoardThread,
+      }),
+      task("task-thread-summary", "completed", "Publish fixture summary to thread", "dashclaw", completedThread, "run-thread-summary", -28 * 60_000, -20 * 60_000, undefined, {
+        kind: "discord-thread",
+        finalSummary: "Completed summary was delivered to Discord.",
+      }),
+      task("task-failed-delivery", "failed", "Investigate failed delivery", "dashclaw", failedThread, "run-failed-delivery", -25 * 60_000, -12 * 60_000, "Discord result delivery failed after thread handoff", {
+        kind: "discord-thread",
+      }),
+      task("task-lost-background-result", "timed_out", "Recover orphaned subagent result", "fixture-model", "agent:fixture-model:subagent:missing-delivery", "run-lost-result", -90 * 60_000, -45 * 60_000, "parent thread unavailable before result delivery", {
+        kind: "subagent",
+        parentSessionKey: missingParentThread,
+        deliveryState: "lost-parent",
+      }),
+    ],
+    approvals: [
+      approval("approval-discord-thread-test", "exec", "pnpm --filter @dashclaw/web test -- dashboard.test.ts", "coder", acpSession, -90_000),
+    ],
+    logs: [
+      "[info] discord-workflow fixture: main channel plus task threads loaded",
+      "[info] task-fixture-model-lane spawned from thread: implement work board",
+      "[warn] task-lost-background-result has partial lineage: parent thread missing",
+      "[error] task-failed-delivery Discord result delivery failed after thread handoff",
+    ],
+  };
 }
 
 function commonScenarioData(): FakeGatewayScenarioData {

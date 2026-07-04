@@ -3,6 +3,8 @@ import { useAppState } from "../context";
 import {
   buildDashboardModel,
   type AttentionTone,
+  type ControlCenterItem,
+  type ControlCenterLane,
   type WorkGraphModel,
   type WorkGraphNode,
   type WorkGraphStatus,
@@ -49,6 +51,8 @@ export function CommandCenterPage() {
       </div>
 
       <RuntimeStateCard model={model} liveConnected={liveConnected} />
+
+      <ControlCenterOverviewCard model={model.controlCenter} />
 
       <InterventionCard model={model.interventionSummary} />
 
@@ -133,6 +137,80 @@ export function CommandCenterPage() {
         </div>
       </div>
     </>
+  );
+}
+
+function ControlCenterOverviewCard({
+  model,
+}: {
+  model: ReturnType<typeof buildDashboardModel>["controlCenter"];
+}) {
+  const lanes: Array<{ key: ControlCenterLane; title: string; empty: string }> = [
+    { key: "activeNow", title: "Active Now", empty: "No active work reported." },
+    { key: "waitingOnMe", title: "Waiting On Me", empty: "No pending approvals." },
+    { key: "attention", title: "Needs Attention", empty: "No stale, lost, access, or security warnings." },
+    { key: "failedRecoverable", title: "Failed / Recoverable", empty: "No failed or timed-out tasks." },
+    { key: "recentlyCompleted", title: "Recently Completed", empty: "No completed tasks yet." },
+  ];
+
+  return (
+    <div className="card" style={{ marginBottom: "1.5rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "baseline" }}>
+        <div>
+          <h3>Control Center</h3>
+          <p className="stat-label" style={{ marginTop: "0.35rem" }}>
+            Active work and operator action queue. <Link to="#work-graph">View lineage / graph</Link>
+          </p>
+        </div>
+      </div>
+      <div className="grid grid-2" style={{ marginTop: "1rem" }}>
+        {lanes.map((lane) => (
+          <ControlCenterLaneCard key={lane.key} title={lane.title} items={model[lane.key]} empty={lane.empty} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ControlCenterLaneCard({ title, items, empty }: { title: string; items: ControlCenterItem[]; empty: string }) {
+  return (
+    <div className="card">
+      <div style={{ display: "flex", justifyContent: "space-between", gap: "0.75rem", alignItems: "baseline" }}>
+        <h3>{title}</h3>
+        <span className="badge neutral">{items.length}</span>
+      </div>
+      {items.length === 0 ? (
+        <p className="empty">{empty}</p>
+      ) : (
+        <div style={{ display: "grid", gap: "0.75rem", marginTop: "0.75rem" }}>
+          {items.slice(0, 5).map((item) => (
+            <ControlCenterWorkCard key={item.id} item={item} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ControlCenterWorkCard({ item }: { item: ControlCenterItem }) {
+  const primaryLink = item.links.task ?? item.links.session ?? item.links.agent ?? item.links.approval ?? item.links.timeline;
+  const lastUpdated = item.updatedAt ?? item.completedAt ?? item.startedAt;
+  const title = primaryLink ? <Link to={primaryLink}>{item.title}</Link> : item.title;
+
+  return (
+    <div style={{ borderTop: "1px solid var(--border)", paddingTop: "0.75rem" }}>
+      <div style={{ display: "flex", gap: "0.5rem", alignItems: "baseline", justifyContent: "space-between" }}>
+        <strong>{title}</strong>
+        <span className={`badge ${badgeClassForTone(item.tone)}`}>{item.status}</span>
+      </div>
+      {item.summary ? <div className="stat-label">{item.summary}</div> : null}
+      <div className="stat-label">
+        {item.agentLabel ?? "Unknown agent"}
+        {item.sessionLabel ? ` · ${item.sessionLabel}` : ""}
+        {lastUpdated ? ` · updated ${formatAge(lastUpdated)}` : ""}
+      </div>
+      <div className="stat-label">Next: {item.nextAction}</div>
+    </div>
   );
 }
 
@@ -221,7 +299,7 @@ function WorkGraphCard({ graph }: { graph: WorkGraphModel }) {
   const roots = graph.roots.filter((node) => node.kind === "agent" || node.children.length > 0).slice(0, 8);
 
   return (
-    <div className="card" style={{ marginBottom: "1.5rem" }}>
+    <div id="work-graph" className="card" style={{ marginBottom: "1.5rem" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "baseline" }}>
         <h3>Live work graph</h3>
         <div className="stat-label">
