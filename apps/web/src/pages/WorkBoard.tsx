@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAppState } from "../context";
-import { buildDashboardModel, type AttentionTone, type WorkBoardColumn, type WorkItem } from "../runtime/dashboard";
+import { buildDashboardModel, type AttentionTone, type ReviewItem, type WorkBoardColumn, type WorkItem } from "../runtime/dashboard";
 
 function badgeClassForTone(tone: AttentionTone | "ok") {
   if (tone === "ok") return "ok";
@@ -76,11 +76,30 @@ function primaryEvidence(item: WorkItem): string {
   return parts.join(" · ");
 }
 
+const REVIEW_LAST_SEEN_KEY = "dashclaw.workReview.lastSeenAt";
+
+function readLocalLastSeen(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(REVIEW_LAST_SEEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export function WorkBoardPage() {
   const { snapshot, timeline, loading, error, refresh } = useAppState();
   const [query, setQuery] = useState("");
+  const [reviewLastSeenAt, setReviewLastSeenAt] = useState<string | null>(() => readLocalLastSeen());
 
-  const model = useMemo(() => (snapshot ? buildDashboardModel(snapshot, timeline) : null), [snapshot, timeline]);
+  const model = useMemo(
+    () => (snapshot ? buildDashboardModel(snapshot, timeline, { reviewLastSeenAt: reviewLastSeenAt ?? undefined }) : null),
+    [snapshot, timeline, reviewLastSeenAt],
+  );
+
+  useEffect(() => {
+    setReviewLastSeenAt(readLocalLastSeen());
+  }, []);
 
   if (loading && !snapshot) return <p>Loading…</p>;
   if (error) return <p className="badge error">{error}</p>;
@@ -92,6 +111,26 @@ export function WorkBoardPage() {
   }));
   const totalItems = columns.reduce((sum, column) => sum + column.items.length, 0);
   const allEmpty = model.workBoard.items.length === 0;
+  const reviewItems = model.reviewQueue.items;
+  const changedReviewItems = model.reviewQueue.changedSinceLastSeen;
+  const visibleReviewItems = (changedReviewItems.length > 0 ? changedReviewItems : reviewItems).slice(0, 6);
+  const markReviewSeen = () => {
+    const nextSeenAt = model.generatedAt;
+    try {
+      window.localStorage.setItem(REVIEW_LAST_SEEN_KEY, nextSeenAt);
+    } catch {
+      // Keep the in-memory marker for this tab even if localStorage is unavailable.
+    }
+    setReviewLastSeenAt(nextSeenAt);
+  };
+  const resetReviewSeen = () => {
+    try {
+      window.localStorage.removeItem(REVIEW_LAST_SEEN_KEY);
+    } catch {
+      // Nothing to reset persistently if localStorage is unavailable.
+    }
+    setReviewLastSeenAt(null);
+  };
 
   return (
     <div className="work-board-page">
@@ -129,6 +168,32 @@ export function WorkBoardPage() {
           Showing {totalItems} work items · {model.workBoard.items.length} total · updated {new Date(snapshot.updatedAt).toLocaleTimeString()}
         </span>
       </div>
+
+      <section className="card work-board-review" aria-label="Recently changed review queue">
+        <div className="work-board-review-head">
+          <div>
+            <h3>Review queue</h3>
+            <p className="stat-label">
+              Completed, failed, and human-review work changed since your local last-seen marker.
+              {reviewLastSeenAt ? ` Last marked seen ${new Date(reviewLastSeenAt).toLocaleString()}.` : " Nothing has been marked seen on this browser yet."}
+            </p>
+          </div>
+          <div className="work-board-actions">
+            <span className={`badge ${changedReviewItems.length > 0 ? "warn" : "neutral"}`}>{changedReviewItems.length} new/changed</span>
+            <button className="btn" type="button" onClick={markReviewSeen} disabled={reviewItems.length === 0}>Mark seen locally</button>
+            {reviewLastSeenAt ? <button className="btn" type="button" onClick={resetReviewSeen}>Reset</button> : null}
+          </div>
+        </div>
+        {visibleReviewItems.length === 0 ? (
+          <p className="empty">No completed, failed, or review work to inspect yet.</p>
+        ) : (
+          <div className="work-board-review-list">
+            {visibleReviewItems.map((item) => (
+              <ReviewQueueCard key={item.id} item={item} />
+            ))}
+          </div>
+        )}
+      </section>
 
       {allEmpty ? (
         <div className="card work-board-empty">
@@ -172,12 +237,26 @@ function BoardStat({ label, value, tone }: { label: string; value: number; tone:
   );
 }
 
-function WorkBoardCard({ item }: { item: WorkItem }) {
+function ReviewQueueCard({ item }: { item: ReviewItem }) {
+  return (
+    <div className="work-board-review-item">
+      <WorkBoardCard item={item.workItem} compact />
+      <div className="work-board-review-meta">
+        <span className={`badge ${badgeClassForTone(item.tone)}`}>{item.kind}</span>
+        {item.sinceLastSeen ? <span className="badge warn">since last seen</span> : null}
+        <span className="stat-label">{item.deliveryStatus}</span>
+      </div>
+      <div className="work-board-next">Next: {item.nextAction}</div>
+    </div>
+  );
+}
+
+function WorkBoardCard({ item, compact = false }: { item: WorkItem; compact?: boolean }) {
   const primaryLink = item.links.task ?? item.links.session ?? item.links.agent ?? item.links.approval ?? item.links.timeline;
   const incomplete = item.lineage.quality !== "complete";
 
   return (
-    <article className={`work-board-card work-board-card-${badgeClassForTone(item.tone)}`}>
+    <article className={`work-board-card work-board-card-${badgeClassForTone(item.tone)}${compact ? " work-board-card-compact" : ""}`}>
       <div className="work-board-card-title-row">
         <strong>{primaryLink ? <Link to={primaryLink}>{item.title}</Link> : item.title}</strong>
         <span className={`badge ${badgeClassForTone(item.tone)}`}>{item.state}</span>

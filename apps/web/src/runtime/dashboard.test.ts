@@ -882,6 +882,66 @@ describe("dashboard selectors", () => {
     expect(orphaned?.lineage.diagnostic).toContain("missing session");
   });
 
+  it("keeps completed, cancelled, and failed terminal work available for review", () => {
+    const model = buildDashboardModel(
+      snapshot({
+        tasks: [
+          {
+            id: "task-completed-review",
+            status: "completed",
+            title: "Delivered result summary",
+            agentId: "agent-a",
+            startedAt: "2026-06-22T11:20:00.000Z",
+            endedAt: "2026-06-22T11:50:00.000Z",
+          },
+          {
+            id: "task-cancelled-review",
+            status: "cancelled",
+            title: "Cancelled obsolete branch",
+            agentId: "agent-a",
+            startedAt: "2026-06-22T11:30:00.000Z",
+            endedAt: "2026-06-22T11:55:00.000Z",
+          },
+          {
+            id: "task-failed-review",
+            status: "failed",
+            title: "Failed delivery recovery",
+            agentId: "agent-b",
+            endedAt: "2026-06-22T11:58:00.000Z",
+            error: "result delivery failed",
+          },
+        ],
+      }),
+      [
+        {
+          id: "event-delivered-result",
+          kind: "agent.assistant",
+          timestamp: "2026-06-22T11:51:00.000Z",
+          title: "Result delivered",
+          summary: "Final summary was delivered back to Discord.",
+          taskId: "task-completed-review",
+          agentId: "agent-a",
+        },
+      ],
+      { nowMs: now },
+    );
+
+    expect(model.controlCenter.recentlyCompleted.map((item) => item.id)).toEqual([
+      "task:task-cancelled-review",
+      "task:task-completed-review",
+    ]);
+    expect(model.controlCenter.failedRecoverable.map((item) => item.id)).toEqual(["task:task-failed-review"]);
+
+    const completed = model.workBoard.items.find((item) => item.id === "task:task-completed-review");
+    const cancelled = model.workBoard.items.find((item) => item.id === "task:task-cancelled-review");
+    const failed = model.workBoard.items.find((item) => item.id === "task:task-failed-review");
+
+    expect(completed).toMatchObject({ state: "done", summary: "Final summary was delivered back to Discord." });
+    expect(completed?.evidence.events.map((event) => event.id)).toEqual(["event-delivered-result"]);
+    expect(cancelled).toMatchObject({ state: "done", summary: "Cancelled obsolete branch cancelled." });
+    expect(failed).toMatchObject({ state: "failed", summary: "result delivery failed" });
+  });
+
   it("builds a thread/session map for Discord source lookup and lineage diagnostics", () => {
     const channel = "agent:dashclaw:discord:channel:1519213500986036264";
     const activeThread = "agent:dashclaw:discord:thread:TASK-035-map";
@@ -1076,5 +1136,183 @@ describe("dashboard selectors", () => {
       session: "/agents/agent-a/sessions/session-1",
       task: "/tasks/task-1",
     });
+  });
+
+  it("builds a review queue for completed, failed, cancelled, delivered, and since-last-seen work", () => {
+    const doneSession = "agent:dashclaw:discord:thread:done-review";
+    const failedSession = "agent:dashclaw:discord:thread:failed-review";
+    const cancelledSession = "agent:dashclaw:discord:thread:cancelled-review";
+    const changedSession = "agent:dashclaw:discord:thread:changed-review";
+
+    const model = buildDashboardModel(
+      snapshot({
+        agents: [{ id: "dashclaw", name: "Dashclaw", model: "gpt-test" }],
+        sessions: [
+          {
+            key: doneSession,
+            agentId: "dashclaw",
+            label: "thread: completed result",
+            status: "completed",
+            isActive: false,
+            updatedAt: "2026-06-22T11:53:00.000Z",
+          },
+          {
+            key: failedSession,
+            agentId: "dashclaw",
+            label: "thread: failed result",
+            status: "failed",
+            isActive: false,
+            updatedAt: "2026-06-22T11:54:00.000Z",
+          },
+          {
+            key: cancelledSession,
+            agentId: "dashclaw",
+            label: "thread: cancelled result",
+            isActive: false,
+            updatedAt: "2026-06-22T11:55:00.000Z",
+          },
+          {
+            key: changedSession,
+            agentId: "dashclaw",
+            label: "thread: changed while away",
+            isActive: false,
+            updatedAt: "2026-06-22T11:56:00.000Z",
+          },
+        ],
+        tasks: [
+          {
+            id: "task-delivered",
+            status: "completed",
+            title: "Publish final summary",
+            agentId: "dashclaw",
+            sessionKey: doneSession,
+            startedAt: "2026-06-22T11:40:00.000Z",
+            endedAt: "2026-06-22T11:52:00.000Z",
+          },
+          {
+            id: "task-review-failed",
+            status: "failed",
+            title: "Deliver result",
+            agentId: "dashclaw",
+            sessionKey: failedSession,
+            endedAt: "2026-06-22T11:54:00.000Z",
+            error: "Discord result delivery failed",
+          },
+          {
+            id: "task-cancelled",
+            status: "cancelled",
+            title: "Cancelled duplicate run",
+            agentId: "dashclaw",
+            sessionKey: cancelledSession,
+            endedAt: "2026-06-22T11:55:00.000Z",
+          },
+          {
+            id: "task-old-done",
+            status: "completed",
+            title: "Old completed work",
+            agentId: "dashclaw",
+            sessionKey: changedSession,
+            startedAt: "2026-06-22T11:20:00.000Z",
+            endedAt: "2026-06-22T11:25:00.000Z",
+          },
+        ],
+      }),
+      [
+        {
+          id: "event-delivered",
+          kind: "agent.assistant",
+          timestamp: "2026-06-22T11:53:30.000Z",
+          title: "Result delivered",
+          summary: "Final summary posted back to Discord.",
+          sessionKey: doneSession,
+          taskId: "task-delivered",
+          payload: { deliveryStatus: "delivered" },
+        },
+        {
+          id: "event-changed",
+          kind: "session.message",
+          timestamp: "2026-06-22T11:56:30.000Z",
+          title: "Follow-up arrived",
+          summary: "User added a follow-up after completion.",
+          sessionKey: changedSession,
+        },
+      ],
+      { nowMs: now, reviewLastSeenAt: "2026-06-22T11:50:00.000Z" },
+    );
+
+    expect(model.reviewQueue.lastSeenAt).toBe("2026-06-22T11:50:00.000Z");
+    expect(model.reviewQueue.summary).toMatchObject({
+      recentlyCompleted: 3,
+      recentlyFailed: 1,
+      changedSinceLastSeen: 4,
+      cancelled: 1,
+      delivered: 1,
+    });
+    expect(model.reviewQueue.recentlyCompleted.map((item) => item.id)).toEqual([
+      `session:${changedSession}`,
+      `session:${cancelledSession}`,
+      `session:${doneSession}`,
+    ]);
+    expect(model.reviewQueue.recentlyFailed[0]).toMatchObject({
+      id: `session:${failedSession}`,
+      kind: "failed",
+      tone: "error",
+      status: "failed",
+    });
+    expect(model.reviewQueue.recentlyCompleted.find((item) => item.id === `session:${cancelledSession}`)).toMatchObject({
+      kind: "cancelled",
+      categories: expect.arrayContaining(["cancelled", "changed"]),
+      status: "cancelled",
+    });
+    expect(model.reviewQueue.recentlyCompleted.find((item) => item.id === `session:${doneSession}`)).toMatchObject({
+      delivered: true,
+      deliveryStatus: "delivered",
+    });
+    expect(model.reviewQueue.changedSinceLastSeen.map((item) => item.id)).toEqual(
+      expect.arrayContaining([`session:${doneSession}`, `session:${failedSession}`, `session:${cancelledSession}`, `session:${changedSession}`]),
+    );
+  });
+
+  it("separates needs-review and stale items in the review queue", () => {
+    const reviewSession = "agent:dashclaw:discord:thread:needs-review-lane";
+    const staleSession = "agent:dashclaw:discord:thread:stale-active-lane";
+
+    const model = buildDashboardModel(
+      snapshot({
+        agents: [{ id: "dashclaw", name: "Dashclaw", model: "gpt-test" }],
+        sessions: [
+          {
+            key: reviewSession,
+            agentId: "dashclaw",
+            label: "thread: inspect final answer",
+            status: "needs_review",
+            isActive: false,
+            updatedAt: "2026-06-22T11:40:00.000Z",
+          },
+          {
+            key: staleSession,
+            agentId: "dashclaw",
+            label: "thread: stale active lane",
+            status: "running",
+            isActive: true,
+            updatedAt: "2026-06-22T11:40:00.000Z",
+          },
+        ],
+      }),
+      [],
+      { nowMs: now, activeSessionStaleAfterMs: 5 * 60_000 },
+    );
+
+    expect(model.reviewQueue.needsReview[0]).toMatchObject({
+      id: `session:${reviewSession}`,
+      kind: "needs-review",
+      categories: ["needs-review"],
+    });
+    expect(model.reviewQueue.stale[0]).toMatchObject({
+      id: `session:${staleSession}`,
+      kind: "stale",
+      tone: "warn",
+    });
+    expect(model.reviewQueue.summary).toMatchObject({ needsReview: 1, stale: 1 });
   });
 });
