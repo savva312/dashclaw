@@ -93,11 +93,21 @@ export interface CronJobSummary {
 export interface ApprovalSummary {
   id: string;
   kind: "exec" | "plugin";
-  status: "pending" | "approved" | "denied";
+  status: "pending" | "approved" | "denied" | "expired" | "consumed";
   command?: string;
   sessionKey?: string;
   agentId?: string;
   requestedAt?: string;
+  resolvedAt?: string;
+  consumedAt?: string;
+  expiresAt?: string;
+  timeoutMs?: number;
+  host?: string;
+  cwd?: string;
+  scope?: string;
+  decision?: string;
+  failureReason?: string;
+  error?: string;
 }
 
 export interface NodeSummary {
