@@ -1,7 +1,7 @@
 import { Link, useParams } from "react-router-dom";
 import { useMemo } from "react";
 import { useAppState } from "../context";
-import { buildTaskDetailModel } from "../runtime/dashboard";
+import { buildTaskDetailModel, type DeliveryRecoveryState } from "../runtime/dashboard";
 import { Badge, EmptyState, Panel, PanelHeader } from "../ui";
 
 function formatClock(iso?: string): string {
@@ -48,7 +48,7 @@ export function TaskDetailPage() {
     );
   }
 
-  const { task, agent, session, events, links } = detail;
+  const { task, agent, session, events, links, deliveryRecovery } = detail;
 
   return (
     <div className="task-detail-page">
@@ -99,6 +99,32 @@ export function TaskDetailPage() {
       </section>
 
       <div className="task-detail-grid">
+        <Panel>
+          <PanelHeader title="Result Delivery / Recovery" aside={<Badge tone={deliveryTone(deliveryRecovery)}>{deliveryRecovery.label}</Badge>} />
+          <div className="delivery-recovery-card task-detail-delivery-card">
+            <p>{deliveryRecovery.summary}</p>
+            <div className="delivery-recovery-links" aria-label="Delivery recovery evidence">
+              {deliveryRecovery.evidence.map((evidence) =>
+                evidence.href ? (
+                  <Link key={`${evidence.label}:${evidence.href}`} to={evidence.href}>{evidence.label}</Link>
+                ) : (
+                  <span key={`${evidence.label}:${evidence.detail ?? "detail"}`}>{evidence.label}: {evidence.detail}</span>
+                ),
+              )}
+            </div>
+            <div className="operator-action-chips" aria-label="Disabled recovery actions">
+              {deliveryRecovery.disabledActions.map((action) => (
+                <span key={action.label} className="operator-action-chip operator-action-chip-disabled" title={action.disabledReason}>
+                  {action.label} unavailable: {action.disabledReason}
+                </span>
+              ))}
+            </div>
+            <p className="stat-label">
+              Recovery is read-only: Dashclaw does not expose safe result-body, resend, or parent-injection metadata here.
+            </p>
+          </div>
+        </Panel>
+
         <Panel>
           <PanelHeader title="Related Events" aside={<Link to="/timeline">Timeline</Link>} />
           {events.length === 0 ? (
@@ -158,4 +184,8 @@ export function TaskDetailPage() {
       </div>
     </div>
   );
+}
+
+function deliveryTone(delivery: DeliveryRecoveryState): "ok" | "warn" | "error" | "neutral" {
+  return delivery.tone === "info" || delivery.tone === "neutral" ? "neutral" : delivery.tone;
 }

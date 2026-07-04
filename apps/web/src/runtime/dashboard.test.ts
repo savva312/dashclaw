@@ -1289,6 +1289,104 @@ describe("dashboard selectors", () => {
     );
   });
 
+  it("models result delivery and recovery states without mutating delivery", () => {
+    const model = buildDashboardModel(
+      snapshot({
+        agents: [{ id: "dashclaw", name: "Dashclaw", model: "gpt-test" }],
+        sessions: [
+          { key: "agent:dashclaw:discord:thread:delivered", agentId: "dashclaw", label: "thread: delivered", updatedAt: "2026-06-22T11:50:00.000Z" },
+          { key: "agent:dashclaw:discord:thread:queued", agentId: "dashclaw", label: "thread: queued", updatedAt: "2026-06-22T11:51:00.000Z" },
+          { key: "agent:dashclaw:discord:thread:failed", agentId: "dashclaw", label: "thread: failed", updatedAt: "2026-06-22T11:52:00.000Z" },
+          { key: "agent:dashclaw:discord:thread:silent", agentId: "dashclaw", label: "thread: silent", updatedAt: "2026-06-22T11:53:00.000Z" },
+        ],
+        tasks: [
+          {
+            id: "task-delivered-result",
+            status: "completed",
+            title: "Delivered subagent result",
+            agentId: "dashclaw",
+            sessionKey: "agent:dashclaw:discord:thread:delivered",
+            startedAt: "2026-06-22T11:30:00.000Z",
+            endedAt: "2026-06-22T11:45:00.000Z",
+          },
+          {
+            id: "task-queued-result",
+            status: "completed",
+            title: "Queued session wake result",
+            agentId: "dashclaw",
+            sessionKey: "agent:dashclaw:discord:thread:queued",
+            startedAt: "2026-06-22T11:31:00.000Z",
+            endedAt: "2026-06-22T11:46:00.000Z",
+          },
+          {
+            id: "task-failed-result-delivery",
+            status: "failed",
+            title: "Failed result delivery",
+            agentId: "dashclaw",
+            sessionKey: "agent:dashclaw:discord:thread:failed",
+            endedAt: "2026-06-22T11:47:00.000Z",
+            error: "Discord result delivery failed after parent handoff",
+          },
+          {
+            id: "task-lost-parent-result",
+            status: "timed_out",
+            title: "Lost parent result",
+            agentId: "dashclaw",
+            sessionKey: "agent:dashclaw:discord:thread:missing-parent",
+            endedAt: "2026-06-22T11:48:00.000Z",
+            error: "parent session unavailable before result delivery",
+          },
+          {
+            id: "task-silent-terminal-result",
+            status: "completed",
+            title: "Silent terminal result",
+            agentId: "dashclaw",
+            sessionKey: "agent:dashclaw:discord:thread:silent",
+            endedAt: "2026-06-22T11:49:00.000Z",
+          },
+        ],
+      }),
+      [
+        {
+          id: "event-delivered-state",
+          kind: "agent.assistant",
+          timestamp: "2026-06-22T11:45:30.000Z",
+          title: "Result delivered",
+          taskId: "task-delivered-result",
+          sessionKey: "agent:dashclaw:discord:thread:delivered",
+          payload: { deliveryStatus: "delivered" },
+        },
+        {
+          id: "event-queued-state",
+          kind: "session.operation",
+          timestamp: "2026-06-22T11:46:30.000Z",
+          title: "Delivery queued for session wake",
+          taskId: "task-queued-result",
+          sessionKey: "agent:dashclaw:discord:thread:queued",
+          payload: { deliveryStatus: "queued" },
+        },
+      ],
+      { nowMs: now },
+    );
+
+    const byTask = new Map(model.workBoard.items.flatMap((item) => item.evidence.tasks.map((task) => [task.id, item.deliveryRecovery])));
+    expect(byTask.get("task-delivered-result")).toMatchObject({ status: "delivered", known: true, resultVisible: true, needsRecovery: false });
+    expect(byTask.get("task-queued-result")).toMatchObject({ status: "queued", known: true, needsRecovery: true });
+    expect(byTask.get("task-failed-result-delivery")).toMatchObject({ status: "failed-delivery", inferred: true, needsRecovery: true });
+    expect(byTask.get("task-lost-parent-result")).toMatchObject({ status: "lost-parent", inferred: true, needsRecovery: true });
+    expect(byTask.get("task-silent-terminal-result")).toMatchObject({ status: "silent-terminal", metadataGaps: expect.arrayContaining(["safe user-visible result body/receipt metadata missing"]) });
+
+    expect(model.deliveryRecoveryQueue.summary).toMatchObject({ total: 4, queued: 1, failedDelivery: 1, lostParent: 1, silentTerminal: 1 });
+    expect(model.deliveryRecoveryQueue.items.map((item) => item.task.id)).toEqual([
+      "task-failed-result-delivery",
+      "task-lost-parent-result",
+      "task-queued-result",
+      "task-silent-terminal-result",
+    ]);
+    expect(model.deliveryRecoveryQueue.metadataGaps).toEqual(expect.arrayContaining(["safe resend/reinject metadata missing"]));
+
+  });
+
   it("separates needs-review and stale items in the review queue", () => {
     const reviewSession = "agent:dashclaw:discord:thread:needs-review-lane";
     const staleSession = "agent:dashclaw:discord:thread:stale-active-lane";
@@ -1330,6 +1428,62 @@ describe("dashboard selectors", () => {
       tone: "warn",
     });
     expect(model.reviewQueue.summary).toMatchObject({ needsReview: 1, stale: 1 });
+  });
+
+  it("surfaces read-only delivery recovery states without exposing result body text", () => {
+    const deliveredSession = "agent:dashclaw:discord:thread:delivered-recovery";
+    const failedSession = "agent:dashclaw:discord:thread:failed-recovery";
+    const silentSession = "agent:dashclaw:discord:thread:silent-recovery";
+
+    const model = buildDashboardModel(
+      snapshot({
+        agents: [{ id: "dashclaw", name: "Dashclaw", model: "gpt-test" }],
+        sessions: [
+          { key: deliveredSession, agentId: "dashclaw", label: "thread: delivered", isActive: false, updatedAt: "2026-06-22T11:50:00.000Z" },
+          { key: failedSession, agentId: "dashclaw", label: "thread: failed", isActive: false, updatedAt: "2026-06-22T11:51:00.000Z" },
+          { key: silentSession, agentId: "dashclaw", label: "thread: silent", isActive: false, updatedAt: "2026-06-22T11:52:00.000Z" },
+        ],
+        tasks: [
+          { id: "task-delivered-recovery", status: "completed", title: "Delivered", agentId: "dashclaw", sessionKey: deliveredSession, endedAt: "2026-06-22T11:50:00.000Z" },
+          { id: "task-failed-recovery", status: "failed", title: "Failed delivery", agentId: "dashclaw", sessionKey: failedSession, endedAt: "2026-06-22T11:51:00.000Z", error: "result delivery failed" },
+          { id: "task-silent-recovery", status: "completed", title: "Silent terminal", agentId: "dashclaw", sessionKey: silentSession, endedAt: "2026-06-22T11:52:00.000Z" },
+        ],
+      }),
+      [
+        {
+          id: "event-delivered-recovery",
+          kind: "agent.assistant",
+          timestamp: "2026-06-22T11:50:30.000Z",
+          title: "Result delivered",
+          sessionKey: deliveredSession,
+          taskId: "task-delivered-recovery",
+          payload: { deliveryStatus: "delivered" },
+        },
+        {
+          id: "event-failed-recovery",
+          kind: "agent.assistant",
+          timestamp: "2026-06-22T11:51:30.000Z",
+          title: "Delivery failed",
+          summary: "Discord delivery failed after completion.",
+          sessionKey: failedSession,
+          taskId: "task-failed-recovery",
+        },
+      ],
+      { nowMs: now },
+    );
+
+    const failed = model.workBoard.items.find((item) => item.links.task === "/tasks/task-failed-recovery");
+    expect(failed?.deliveryRecovery).toMatchObject({ status: "failed-delivery", needsRecovery: true, resultVisible: false });
+    expect(failed?.deliveryRecovery.disabledActions.map((action) => action.label)).toEqual([
+      "Resend result",
+      "Inject into parent",
+      "Copy result text",
+      "Retry delivery",
+    ]);
+
+    const silent = model.workBoard.items.find((item) => item.links.task === "/tasks/task-silent-recovery");
+    expect(silent?.deliveryRecovery).toMatchObject({ status: "silent-terminal", known: false, inferred: true });
+    expect(model.deliveryRecoveryQueue.summary).toMatchObject({ total: 2, failedDelivery: 1, silentTerminal: 1 });
   });
 
   it("adds disabled work-item actions with concrete missing-metadata reasons", () => {

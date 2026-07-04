@@ -43,6 +43,10 @@ export type OperatorActionId =
   | "abort-session"
   | "cancel-task"
   | "retry-task"
+  | "copy-result"
+  | "resend-result"
+  | "inject-result"
+  | "retry-delivery"
   | "approve-approval"
   | "deny-approval";
 
@@ -117,6 +121,7 @@ export interface WorkGraphNode {
   startedAt?: string;
   updatedAt?: string;
   links: RuntimeLinks;
+  deliveryRecovery?: DeliveryRecoveryState;
   children: WorkGraphNode[];
 }
 
@@ -223,6 +228,71 @@ export interface WorkItemLineage {
   diagnostic?: string;
 }
 
+export type DeliveryRecoveryStatus =
+  | "delivered"
+  | "queued"
+  | "failed-delivery"
+  | "lost-parent"
+  | "silent-terminal"
+  | "unknown";
+
+export interface DeliveryRecoveryAction {
+  label: string;
+  disabledReason: string;
+}
+
+export interface DeliveryRecoveryEvidence {
+  label: string;
+  href?: string;
+  detail?: string;
+  source?: "task" | "session" | "timeline" | "lineage" | "metadata";
+  certainty?: "known" | "inferred" | "missing";
+}
+
+export interface DeliveryRecoveryState {
+  status: DeliveryRecoveryStatus;
+  label: string;
+  tone: AttentionTone | "ok" | "neutral";
+  summary: string;
+  known: boolean;
+  inferred: boolean;
+  resultVisible: boolean;
+  needsRecovery: boolean;
+  metadataGaps: string[];
+  evidence: DeliveryRecoveryEvidence[];
+  disabledActions: DeliveryRecoveryAction[];
+}
+
+export interface DeliveryRecoveryQueueItem {
+  id: string;
+  status: DeliveryRecoveryStatus;
+  tone: AttentionTone | "ok" | "neutral";
+  title: string;
+  summary: string;
+  nextAction: string;
+  agent?: AgentSummary;
+  session?: SessionSummary;
+  task: TaskSummary;
+  events: TimelineEvent[];
+  links: RuntimeLinks;
+  deliveryRecovery: DeliveryRecoveryState;
+  operatorActions: OperatorAction[];
+}
+
+export interface DeliveryRecoveryQueueModel {
+  items: DeliveryRecoveryQueueItem[];
+  summary: {
+    total: number;
+    delivered: number;
+    queued: number;
+    failedDelivery: number;
+    lostParent: number;
+    silentTerminal: number;
+    unknown: number;
+  };
+  metadataGaps: string[];
+}
+
 export interface WorkItem {
   id: string;
   title: string;
@@ -236,6 +306,7 @@ export interface WorkItem {
   sessionLabel?: string;
   currentAction?: string;
   lineage: WorkItemLineage;
+  deliveryRecovery: DeliveryRecoveryState;
   evidence: WorkItemEvidence;
   links: RuntimeLinks;
   operatorActions?: OperatorAction[];
@@ -272,6 +343,7 @@ export interface ReviewItem {
   sinceLastSeen: boolean;
   delivered: boolean;
   deliveryStatus?: string;
+  deliveryRecovery: DeliveryRecoveryState;
   agentLabel?: string;
   sessionLabel?: string;
   links: RuntimeLinks;
@@ -375,6 +447,7 @@ export interface DashboardModel {
   controlCenter: ControlCenterOverview;
   workBoard: WorkBoardModel;
   reviewQueue: ReviewQueueModel;
+  deliveryRecoveryQueue: DeliveryRecoveryQueueModel;
   threadSessionMap: ThreadSessionMapModel;
   workGraph: WorkGraphModel;
   attention: AttentionItem[];
@@ -388,6 +461,7 @@ export interface TaskDetailModel {
   session?: SessionSummary;
   events: TimelineEvent[];
   links: RuntimeLinks;
+  deliveryRecovery: DeliveryRecoveryState;
 }
 
 export interface DashboardModelOptions {
@@ -437,6 +511,7 @@ export function buildDashboardModel(
     staleAfterMs: activeSessionStaleAfterMs,
     itemLimit: options.reviewQueueLimit,
   });
+  const deliveryRecoveryQueue = buildDeliveryRecoveryQueueModel(snapshot, timeline);
   const threadSessionMap = buildThreadSessionMapModel(snapshot, timeline, {
     nowMs,
     activeSessionStaleAfterMs,
@@ -483,6 +558,7 @@ export function buildDashboardModel(
     controlCenter: buildControlCenterOverview(snapshot, { activeWork, attention, pendingApprovals, failedTasks }),
     workBoard,
     reviewQueue,
+    deliveryRecoveryQueue,
     threadSessionMap,
     workGraph,
     attention,
@@ -1069,6 +1145,13 @@ function workItemFromSeed(
   const primaryApproval = approvals.find((approval) => approval.status === "pending") ?? approvals[0];
   const primaryAgentId = primarySession?.agentId ?? primaryTask?.agentId ?? primaryApproval?.agentId ?? agents[0]?.id;
   const primarySessionKey = primarySession?.key ?? primaryTask?.sessionKey ?? primaryApproval?.sessionKey;
+  const links = linksFor({
+    agentId: primaryAgentId,
+    sessionKey: primarySessionKey,
+    taskId: primaryTask?.id,
+    approvalId: primaryApproval?.status === "pending" ? primaryApproval.id : undefined,
+  });
+  const lineage = lineageForWorkItem({ sessions, tasks, approvals }, context);
 
   return {
     id: seed.key,
@@ -1082,21 +1165,12 @@ function workItemFromSeed(
     agentLabel: agents.map(labelForAgent).filter(Boolean).join(", ") || undefined,
     sessionLabel: primarySession ? labelForSession(primarySession) : undefined,
     currentAction: currentActionForWorkItem({ sessions, tasks, approvals }),
-    lineage: lineageForWorkItem({ sessions, tasks, approvals }, context),
+    lineage,
+    deliveryRecovery: deliveryRecoveryForWorkItem({ state, sessions, tasks, events, lineage, links }),
     evidence: { agents, sessions, tasks, approvals, events },
-    links: linksFor({
-      agentId: primaryAgentId,
-      sessionKey: primarySessionKey,
-      taskId: primaryTask?.id,
-      approvalId: primaryApproval?.status === "pending" ? primaryApproval.id : undefined,
-    }),
+    links,
     operatorActions: buildOperatorActions({
-      links: linksFor({
-        agentId: primaryAgentId,
-        sessionKey: primarySessionKey,
-        taskId: primaryTask?.id,
-        approvalId: primaryApproval?.status === "pending" ? primaryApproval.id : undefined,
-      }),
+      links,
       agent: agents[0],
       session: primarySession,
       task: primaryTask,
@@ -1153,6 +1227,7 @@ function reviewItemFromWorkItem(
     sinceLastSeen,
     delivered,
     deliveryStatus,
+    deliveryRecovery: item.deliveryRecovery,
     agentLabel: item.agentLabel,
     sessionLabel: item.sessionLabel,
     links: item.links,
@@ -1241,6 +1316,324 @@ function deliveryStatusForEvents(events: TimelineEvent[]): string | undefined {
     if (text.includes("delivered") || text.includes("published")) return "delivered";
   }
   return undefined;
+}
+
+export function buildDeliveryRecoveryQueueModel(
+  snapshot: RuntimeSnapshot,
+  timeline: TimelineEvent[],
+): DeliveryRecoveryQueueModel {
+  const agentsById = mapBy(snapshot.agents, (agent) => agent.id);
+  const sessionsByKey = mapBy(snapshot.sessions, (session) => session.key);
+  const sessionParentHints = buildSessionParentHints(timeline);
+  const items: DeliveryRecoveryQueueItem[] = [];
+
+  for (const task of snapshot.tasks) {
+    const session = task.sessionKey ? sessionsByKey.get(task.sessionKey) : undefined;
+    const agentId = task.agentId ?? session?.agentId;
+    const agent = agentId ? agentsById.get(agentId) : undefined;
+    const events = relatedEventsForTask(timeline, task);
+    const links = linksFor({ agentId, sessionKey: session?.key ?? task.sessionKey, taskId: task.id });
+    const lineage = lineageForWorkItem(
+      { sessions: session ? [session] : [], tasks: [task], approvals: [] },
+      { agentsById, sessionsByKey, sessionParentHints },
+    );
+    const deliveryRecovery = deliveryRecoveryForWorkItem({
+      state: stateForWorkItem({ sessions: session ? [session] : [], tasks: [task], approvals: [] }),
+      sessions: session ? [session] : [],
+      tasks: [task],
+      events,
+      lineage,
+      links,
+    });
+
+    if (!shouldShowInDeliveryRecoveryQueue(deliveryRecovery, task)) continue;
+
+    items.push({
+      id: `task:${task.id}`,
+      status: deliveryRecovery.status,
+      tone: deliveryRecovery.tone,
+      title: task.title ?? task.id,
+      summary: deliveryRecovery.summary,
+      nextAction: nextActionForDeliveryRecovery(deliveryRecovery),
+      agent,
+      session,
+      task,
+      events,
+      links,
+      deliveryRecovery,
+      operatorActions: buildOperatorActions({ links, agent, session, task }),
+    });
+  }
+
+  items.sort(compareDeliveryRecoveryQueueItems);
+  return {
+    items,
+    summary: {
+      total: items.length,
+      delivered: items.filter((item) => item.status === "delivered").length,
+      queued: items.filter((item) => item.status === "queued").length,
+      failedDelivery: items.filter((item) => item.status === "failed-delivery").length,
+      lostParent: items.filter((item) => item.status === "lost-parent").length,
+      silentTerminal: items.filter((item) => item.status === "silent-terminal").length,
+      unknown: items.filter((item) => item.status === "unknown").length,
+    },
+    metadataGaps: dedupe(items.flatMap((item) => item.deliveryRecovery.metadataGaps)).sort(),
+  };
+}
+
+function shouldShowInDeliveryRecoveryQueue(deliveryRecovery: DeliveryRecoveryState, task: TaskSummary): boolean {
+  if (deliveryRecovery.status === "delivered") return false;
+  if (deliveryRecovery.needsRecovery) return true;
+  if (deliveryRecovery.status === "queued") return true;
+  return isTerminalTask(task) && deliveryRecovery.status === "unknown";
+}
+
+function nextActionForDeliveryRecovery(deliveryRecovery: DeliveryRecoveryState): string {
+  if (deliveryRecovery.status === "failed-delivery") return "Use task and timeline evidence to manually recover the result; automatic resend is disabled.";
+  if (deliveryRecovery.status === "lost-parent") return "Find the intended parent/session from lineage evidence, then manually recover the result if appropriate.";
+  if (deliveryRecovery.status === "silent-terminal") return "Confirm whether a user-visible terminal summary exists before archiving.";
+  if (deliveryRecovery.status === "queued") return "Watch for a delivery receipt or session wake before dismissing.";
+  return "Inspect task/session/timeline evidence before deciding whether recovery is needed.";
+}
+
+function compareDeliveryRecoveryQueueItems(a: DeliveryRecoveryQueueItem, b: DeliveryRecoveryQueueItem): number {
+  const statusRank = rankDeliveryRecoveryStatus(a.status) - rankDeliveryRecoveryStatus(b.status);
+  if (statusRank !== 0) return statusRank;
+  return parseTime(b.task.endedAt ?? b.task.startedAt) - parseTime(a.task.endedAt ?? a.task.startedAt);
+}
+
+function rankDeliveryRecoveryStatus(status: DeliveryRecoveryStatus): number {
+  switch (status) {
+    case "failed-delivery":
+      return 0;
+    case "lost-parent":
+      return 1;
+    case "queued":
+      return 2;
+    case "silent-terminal":
+      return 3;
+    case "unknown":
+      return 4;
+    case "delivered":
+      return 5;
+  }
+}
+
+function isTerminalTask(task: TaskSummary): boolean {
+  return task.status === "completed" || task.status === "failed" || task.status === "timed_out" || task.status === "cancelled";
+}
+
+type DeliverySignal = {
+  status?: string;
+  known: boolean;
+  inferred: boolean;
+  resultVisible: boolean;
+};
+
+function deliverySignalForWorkItem(
+  events: TimelineEvent[],
+  task: TaskSummary | undefined,
+  sessions: SessionSummary[],
+): DeliverySignal {
+  const structured = [task as unknown as Record<string, unknown> | undefined, ...sessions.map((session) => session as unknown as Record<string, unknown>)]
+    .flatMap((raw) => raw ? [deliveryStatusFromRaw(raw)] : [])
+    .find((status): status is string => Boolean(status));
+  if (structured) return { status: structured, known: true, inferred: false, resultVisible: isDeliveredStatus(structured) || rawHasResultSummary(task) || sessions.some(rawHasResultSummary) };
+
+  for (const event of [...events].sort(compareEventsDesc)) {
+    const direct = payloadString(event.payload, "deliveryStatus", "delivery", "deliveryState", "resultDeliveryStatus");
+    if (direct) return { status: direct, known: true, inferred: false, resultVisible: isDeliveredStatus(direct) || rawHasResultSummary(event.payload) };
+    const delivered = payloadBoolean(event.payload, "delivered", "resultDelivered", "deliverySucceeded");
+    if (delivered !== undefined) return { status: delivered ? "delivered" : "failed", known: true, inferred: false, resultVisible: delivered };
+
+    const text = `${event.title} ${event.summary ?? ""}`.toLowerCase();
+    if (text.includes("delivery failed") || text.includes("failed delivery")) return { status: "failed", known: false, inferred: true, resultVisible: false };
+    if (text.includes("delivered") || text.includes("published") || text.includes("posted back")) return { status: "delivered", known: false, inferred: true, resultVisible: true };
+    if (text.includes("queued for session wake") || text.includes("delivery queued") || text.includes("delivery pending")) return { status: "queued", known: false, inferred: true, resultVisible: false };
+  }
+
+  const taskText = `${task?.title ?? ""} ${task?.error ?? ""}`.toLowerCase();
+  if (taskText.includes("delivery failed") || taskText.includes("failed delivery") || taskText.includes("result delivery failed")) {
+    return { status: "failed", known: false, inferred: true, resultVisible: false };
+  }
+  if (taskText.includes("parent thread unavailable") || taskText.includes("parent session unavailable")) {
+    return { status: "lost-parent", known: false, inferred: true, resultVisible: false };
+  }
+
+  return { known: false, inferred: false, resultVisible: rawHasResultSummary(task) || sessions.some(rawHasResultSummary) || events.some((event) => rawHasResultSummary(event.payload)) };
+}
+
+function deliveryStatusFromRaw(raw: Record<string, unknown>): string | undefined {
+  return pickRawString(raw, "deliveryStatus", "delivery", "deliveryState", "resultDeliveryStatus", "resultDeliveryState");
+}
+
+function rawHasResultSummary(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  return Boolean(pickRawString(raw as Record<string, unknown>, "resultSummary", "finalSummary", "userVisibleResult", "terminalSummary"));
+}
+
+function isDeliveredStatus(status: string): boolean {
+  const normalized = status.toLowerCase().replace(/[ _]/g, "-");
+  return normalized === "delivered" || normalized === "published" || normalized === "posted" || normalized === "sent";
+}
+
+function deliveryRecoveryForWorkItem(input: {
+  state: WorkItemState;
+  sessions: SessionSummary[];
+  tasks: TaskSummary[];
+  events: TimelineEvent[];
+  lineage: WorkItemLineage;
+  links: RuntimeLinks;
+}): DeliveryRecoveryState {
+  const signal = deliverySignalForWorkItem(input.events, primaryReviewTaskForWorkItem(input.tasks), input.sessions);
+  const explicit = signal.status?.toLowerCase().replace(/[ _]/g, "-");
+  const terminalTask = primaryReviewTaskForWorkItem(input.tasks);
+  const terminal = Boolean(terminalTask && isTerminalTask(terminalTask));
+  const eventText = input.events.map((event) => `${event.title} ${event.summary ?? ""}`).join(" ").toLowerCase();
+  const taskText = `${terminalTask?.title ?? ""} ${terminalTask?.error ?? ""}`.toLowerCase();
+  const text = `${eventText} ${taskText}`;
+  const parentMissing =
+    input.lineage.diagnostic?.toLowerCase().includes("parent session missing") ||
+    input.lineage.diagnostic?.toLowerCase().includes("references missing session") ||
+    text.includes("parent thread unavailable") ||
+    text.includes("parent session unavailable") ||
+    text.includes("parent thread missing") ||
+    text.includes("parent session missing") ||
+    input.sessions.some((session) => normalizeWorkStatusText(session.status) === "lost");
+
+  const evidence = deliveryRecoveryEvidence(input.links, input.events, terminalTask, input.lineage);
+  const disabledActions = disabledRecoveryActions();
+
+  if (explicit && isDeliveredStatus(explicit)) {
+    return {
+      status: "delivered",
+      label: "Result delivered",
+      tone: "ok",
+      summary: "Runtime evidence says the user-visible result was delivered or published.",
+      known: signal.known,
+      inferred: signal.inferred,
+      resultVisible: signal.resultVisible,
+      needsRecovery: false,
+      metadataGaps: signal.inferred ? ["delivery receipt is inferred from timeline/task text because normalized delivery metadata is unavailable"] : [],
+      evidence,
+      disabledActions,
+    };
+  }
+
+  if (explicit === "queued" || explicit === "pending" || explicit === "queued-for-session-wake") {
+    return {
+      status: "queued",
+      label: "Delivery queued",
+      tone: "warn",
+      summary: "Result delivery appears queued or pending; verify it wakes the target session before archiving.",
+      known: signal.known,
+      inferred: signal.inferred,
+      resultVisible: false,
+      needsRecovery: true,
+      metadataGaps: ["delivery completion not confirmed", "safe resend/reinject metadata missing"],
+      evidence,
+      disabledActions,
+    };
+  }
+
+  if (explicit === "failed" || explicit === "delivery-failed" || explicit === "failed-delivery" || eventText.includes("delivery failed") || eventText.includes("failed delivery")) {
+    return {
+      status: "failed-delivery",
+      label: "Delivery failed",
+      tone: "error",
+      summary: "A delivery failure signal is present. Use evidence links to manually recover; automatic resend/inject is intentionally disabled.",
+      known: signal.known,
+      inferred: signal.inferred || !signal.known,
+      resultVisible: false,
+      needsRecovery: true,
+      metadataGaps: ["safe resend/reinject metadata missing"],
+      evidence,
+      disabledActions,
+    };
+  }
+
+  if (explicit === "lost-parent" || (terminal && parentMissing)) {
+    return {
+      status: "lost-parent",
+      label: "Parent missing",
+      tone: "error",
+      summary: "The task is terminal, but parent session/thread evidence is missing or lost, so delivery cannot be trusted.",
+      known: false,
+      inferred: true,
+      resultVisible: false,
+      needsRecovery: true,
+      metadataGaps: ["parent session/thread delivery target missing"],
+      evidence,
+      disabledActions,
+    };
+  }
+
+  if (terminal && !explicit) {
+    return {
+      status: "silent-terminal",
+      label: "No delivery signal",
+      tone: "warn",
+      summary: "Task reached a terminal state without explicit delivered/queued/failed delivery metadata.",
+      known: false,
+      inferred: true,
+      resultVisible: signal.resultVisible,
+      needsRecovery: true,
+      metadataGaps: ["terminal task has no delivery status metadata", "safe user-visible result body/receipt metadata missing"],
+      evidence,
+      disabledActions,
+    };
+  }
+
+  return {
+    status: "unknown",
+    label: "Delivery not terminal",
+    tone: "neutral",
+    summary: input.state === "active" || input.state === "waiting" ? "Delivery is not expected until the work reaches a terminal state." : "No delivery metadata is available yet.",
+    known: false,
+    inferred: false,
+    resultVisible: false,
+    needsRecovery: false,
+    metadataGaps: ["delivery status metadata unavailable"],
+    evidence,
+    disabledActions,
+  };
+}
+
+function deliveryRecoveryEvidence(
+  links: RuntimeLinks,
+  events: TimelineEvent[],
+  task: TaskSummary | undefined,
+  lineage: WorkItemLineage,
+): DeliveryRecoveryEvidence[] {
+  const newestDeliveryEvent = [...events].sort(compareEventsDesc).find((event) => deliveryStatusForEvents([event]) || /deliver|publish|result/i.test(`${event.title} ${event.summary ?? ""}`));
+  const evidence: Array<DeliveryRecoveryEvidence | undefined> = [
+    links.task ? { label: "Task detail", href: links.task, detail: task?.status } : undefined,
+    links.session ? { label: "Parent/session", href: links.session } : undefined,
+    { label: "Timeline", href: links.timeline ?? "/timeline", detail: newestDeliveryEvent ? newestDeliveryEvent.title : "Filter by task/session/run" },
+    lineage.diagnostic ? { label: "Lineage", detail: lineage.diagnostic } : undefined,
+  ];
+  return evidence.filter((item): item is DeliveryRecoveryEvidence => Boolean(item));
+}
+
+function disabledRecoveryActions(): DeliveryRecoveryAction[] {
+  return [
+    {
+      label: "Resend result",
+      disabledReason: "disabled until routing, permission, and idempotency metadata are explicit",
+    },
+    {
+      label: "Inject into parent",
+      disabledReason: "disabled to avoid posting hidden transcript/tool output into a user channel",
+    },
+    {
+      label: "Copy result text",
+      disabledReason: "disabled because the runtime model does not expose a safe user-visible result body separately from transcript/tool output",
+    },
+    {
+      label: "Retry delivery",
+      disabledReason: "disabled because no delivery retry RPC, target route, or idempotency key is declared",
+    },
+  ];
 }
 
 function controlCenterItemFromAttention(item: AttentionItem, lane: ControlCenterLane): ControlCenterItem {
@@ -1403,6 +1796,11 @@ export function buildWorkGraphModel(
         : agentId && nodes.has(`agent:${agentId}`)
           ? `agent:${agentId}`
           : undefined;
+    const links = linksFor({ agentId, sessionKey: session?.key ?? task.sessionKey, taskId: task.id });
+    const lineage = lineageForWorkItem(
+      { sessions: session ? [session] : [], tasks: [task], approvals: [] },
+      { agentsById, sessionsByKey, sessionParentHints },
+    );
 
     nodes.set(`task:${task.id}`, {
       id: `task:${task.id}`,
@@ -1416,7 +1814,15 @@ export function buildWorkGraphModel(
       parentId,
       startedAt: task.startedAt,
       updatedAt: task.endedAt ?? task.startedAt,
-      links: linksFor({ agentId, sessionKey: session?.key ?? task.sessionKey, taskId: task.id }),
+      links,
+      deliveryRecovery: deliveryRecoveryForWorkItem({
+        state: stateForWorkItem({ sessions: session ? [session] : [], tasks: [task], approvals: [] }),
+        sessions: session ? [session] : [],
+        tasks: [task],
+        events: relatedEventsForTask(timeline, task),
+        lineage,
+        links,
+      }),
       children: [],
     });
   }
@@ -1483,13 +1889,29 @@ export function buildTaskDetailModel(
   const session = task.sessionKey
     ? snapshot.sessions.find((candidate) => candidate.key === task.sessionKey)
     : undefined;
+  const links = linksFor({ agentId: task.agentId, sessionKey: task.sessionKey, taskId: task.id });
+  const events = relatedEventsForTask(timeline, task);
+  const sessionsByKey = mapBy(snapshot.sessions, (candidate) => candidate.key);
+  const agentsById = mapBy(snapshot.agents, (candidate) => candidate.id);
+  const lineage = lineageForWorkItem(
+    { sessions: session ? [session] : [], tasks: [task], approvals: [] },
+    { agentsById, sessionsByKey, sessionParentHints: buildSessionParentHints(timeline) },
+  );
 
   return {
     task,
     agent,
     session,
-    events: relatedEventsForTask(timeline, task),
-    links: linksFor({ agentId: task.agentId, sessionKey: task.sessionKey, taskId: task.id }),
+    events,
+    links,
+    deliveryRecovery: deliveryRecoveryForWorkItem({
+      state: stateForWorkItem({ sessions: session ? [session] : [], tasks: [task], approvals: [] }),
+      sessions: session ? [session] : [],
+      tasks: [task],
+      events,
+      lineage,
+      links,
+    }),
   };
 }
 
