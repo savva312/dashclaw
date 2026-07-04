@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RuntimeSnapshot, TimelineEvent } from "@dashclaw/runtime-model";
-import { buildDashboardModel, buildTaskDetailModel } from "./dashboard";
+import { buildDashboardModel, buildTaskDetailModel, buildThreadSessionMapModel } from "./dashboard";
 
 const now = Date.parse("2026-06-22T12:00:00.000Z");
 
@@ -875,6 +875,152 @@ describe("dashboard selectors", () => {
 
     const orphaned = model.workBoard.items.find((item) => item.id === "task:task-orphaned-failure");
     expect(orphaned).toMatchObject({
+      state: "failed",
+      tone: "error",
+      lineage: { quality: "partial" },
+    });
+    expect(orphaned?.lineage.diagnostic).toContain("missing session");
+  });
+
+  it("builds a thread/session map for Discord source lookup and lineage diagnostics", () => {
+    const channel = "agent:dashclaw:discord:channel:1519213500986036264";
+    const activeThread = "agent:dashclaw:discord:thread:TASK-035-map";
+    const subagentSession = "agent:worker:subagent:TASK-035-selector-lane";
+    const waitingThread = "agent:dashclaw:discord:thread:needs-approval";
+    const archivedThread = "agent:dashclaw:discord:thread:archived-context";
+
+    const model = buildThreadSessionMapModel(
+      snapshot({
+        agents: [
+          { id: "dashclaw", name: "Dashclaw", model: "gpt-test" },
+          { id: "worker", name: "Selector Worker", model: "gpt-test" },
+        ],
+        sessions: [
+          {
+            key: channel,
+            agentId: "dashclaw",
+            label: "#dashclaw",
+            isActive: false,
+            updatedAt: "2026-06-22T11:30:00.000Z",
+          },
+          {
+            key: activeThread,
+            agentId: "dashclaw",
+            label: "thread: TASK-035 thread/session map",
+            isActive: true,
+            parentSessionKey: channel,
+            currentRunId: "run-thread-map",
+            updatedAt: "2026-06-22T11:59:00.000Z",
+          },
+          {
+            key: subagentSession,
+            agentId: "worker",
+            label: "TASK-035 selector lane",
+            isActive: true,
+            parentSessionKey: activeThread,
+            currentRunId: "run-selector-lane",
+            currentTool: "pnpm test",
+            updatedAt: "2026-06-22T11:59:20.000Z",
+          },
+          {
+            key: waitingThread,
+            agentId: "dashclaw",
+            label: "thread: approval handoff",
+            isActive: false,
+            parentSessionKey: channel,
+            updatedAt: "2026-06-22T11:58:00.000Z",
+          },
+          {
+            key: archivedThread,
+            agentId: "dashclaw",
+            label: "thread: archived context",
+            status: "archived",
+            isActive: false,
+            parentSessionKey: channel,
+            updatedAt: "2026-06-22T09:00:00.000Z",
+          },
+        ],
+        tasks: [
+          {
+            id: "task-map-parent",
+            status: "running",
+            title: "Build thread/session map selector",
+            agentId: "dashclaw",
+            sessionKey: activeThread,
+            runId: "run-thread-map",
+            startedAt: "2026-06-22T11:50:00.000Z",
+          },
+          {
+            id: "task-map-subagent",
+            status: "running",
+            kind: "subagent",
+            title: "Audit selector/model lane",
+            agentId: "worker",
+            sessionKey: subagentSession,
+            runId: "run-selector-lane",
+            startedAt: "2026-06-22T11:55:00.000Z",
+          },
+          {
+            id: "task-orphaned-thread",
+            status: "timed_out",
+            title: "Recover missing Discord thread",
+            agentId: "worker",
+            sessionKey: "agent:dashclaw:discord:thread:missing-original",
+            runId: "run-missing-thread",
+            startedAt: "2026-06-22T10:30:00.000Z",
+            endedAt: "2026-06-22T11:30:00.000Z",
+            error: "parent thread missing from snapshot",
+          },
+        ],
+        approvals: [
+          {
+            id: "approval-map-test",
+            kind: "exec",
+            status: "pending",
+            command: "pnpm --filter @dashclaw/web test -- dashboard.test.ts",
+            agentId: "dashclaw",
+            sessionKey: waitingThread,
+            requestedAt: "2026-06-22T11:58:30.000Z",
+          },
+        ],
+      }),
+      [],
+      { nowMs: now },
+    );
+
+    expect(model.summary).toMatchObject({ channels: 1, threads: 3, sessions: 1, orphanedTasks: 1 });
+    expect(model.metadataGaps).toContain(
+      "Discord source metadata is inferred from session keys because channel/thread ids, archive state, and permalinks are not normalized in RuntimeSnapshot.",
+    );
+
+    const thread = model.entries.find((entry) => entry.id === `session:${activeThread}`);
+    expect(thread).toMatchObject({
+      source: { kind: "thread", label: "TASK-035 thread/session map", threadId: "TASK-035-map" },
+      parentSession: { key: channel },
+      state: "active",
+      tone: "ok",
+      lineage: { quality: "partial" },
+    });
+    expect(thread?.childSessions.map((session) => session.key)).toEqual([subagentSession]);
+    expect(thread?.tasks.map((task) => task.id)).toEqual(["task-map-subagent", "task-map-parent"]);
+    expect(thread?.runIds).toEqual(["run-selector-lane", "run-thread-map"]);
+    expect(thread?.agents.map((agent) => agent.id)).toEqual(["dashclaw", "worker"]);
+    expect(thread?.links).toMatchObject({
+      agent: "/agents/dashclaw",
+      session: `/agents/dashclaw/sessions/${encodeURIComponent(activeThread)}`,
+      task: "/tasks/task-map-subagent",
+    });
+
+    expect(model.entries.find((entry) => entry.id === `session:${waitingThread}`)).toMatchObject({
+      state: "waiting",
+      approvals: [expect.objectContaining({ id: "approval-map-test" })],
+      links: { approval: "/approvals" },
+    });
+    expect(model.entries.find((entry) => entry.id === `session:${archivedThread}`)?.state).toBe("archived");
+
+    const orphaned = model.entries.find((entry) => entry.id === "task:task-orphaned-thread");
+    expect(orphaned).toMatchObject({
+      source: { kind: "task" },
       state: "failed",
       tone: "error",
       lineage: { quality: "partial" },

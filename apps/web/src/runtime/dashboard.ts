@@ -28,6 +28,7 @@ export interface RuntimeLinks {
   task?: string;
   timeline?: string;
   approval?: string;
+  discord?: string;
 }
 
 export interface ActiveWorkItem {
@@ -217,6 +218,55 @@ export interface WorkBoardModel {
   summary: Record<WorkItemState, number>;
 }
 
+export type ThreadSessionMapSourceKind = "channel" | "thread" | "session" | "task" | "approval";
+export type ThreadSessionMapState = "active" | "waiting" | "queued" | "completed" | "failed" | "archived" | "stale" | "unknown";
+
+export interface ThreadSessionMapSource {
+  kind: ThreadSessionMapSourceKind;
+  key: string;
+  label: string;
+  platform?: string;
+  channelId?: string;
+  channelName?: string;
+  threadId?: string;
+  threadName?: string;
+  permalink?: string;
+  archived?: boolean;
+  metadataSource: "raw" | "key" | "missing";
+}
+
+export interface ThreadSessionMapEntry {
+  id: string;
+  source: ThreadSessionMapSource;
+  parentSession?: SessionSummary;
+  childSessions: SessionSummary[];
+  sessions: SessionSummary[];
+  tasks: TaskSummary[];
+  runIds: string[];
+  approvals: ApprovalSummary[];
+  agents: AgentSummary[];
+  state: ThreadSessionMapState;
+  tone: AttentionTone | "ok";
+  lineage: WorkItemLineage;
+  updatedAt?: string;
+  links: RuntimeLinks;
+}
+
+export interface ThreadSessionMapModel {
+  entries: ThreadSessionMapEntry[];
+  summary: {
+    total: number;
+    channels: number;
+    threads: number;
+    sessions: number;
+    orphanedTasks: number;
+    orphanedApprovals: number;
+    partialLineage: number;
+    missingLineage: number;
+  };
+  metadataGaps: string[];
+}
+
 export interface RuntimeStatusSummary {
   tone: AttentionTone | "ok";
   label: string;
@@ -242,6 +292,7 @@ export interface DashboardModel {
   activeWork: ActiveWorkItem[];
   controlCenter: ControlCenterOverview;
   workBoard: WorkBoardModel;
+  threadSessionMap: ThreadSessionMapModel;
   workGraph: WorkGraphModel;
   attention: AttentionItem[];
   interventionSummary: InterventionSummary;
@@ -294,6 +345,10 @@ export function buildDashboardModel(
     activeSessionStaleAfterMs,
   });
   const workBoard = buildWorkBoardModel(snapshot, timeline, { nowMs });
+  const threadSessionMap = buildThreadSessionMapModel(snapshot, timeline, {
+    nowMs,
+    activeSessionStaleAfterMs,
+  });
   const attention = buildAttentionItems(snapshot, {
     agentsById,
     sessionsByKey,
@@ -335,6 +390,7 @@ export function buildDashboardModel(
     activeWork,
     controlCenter: buildControlCenterOverview(snapshot, { activeWork, attention, pendingApprovals, failedTasks }),
     workBoard,
+    threadSessionMap,
     workGraph,
     attention,
     interventionSummary: buildInterventionSummary(attention),
@@ -610,6 +666,219 @@ export function buildWorkBoardModel(
       items: items.filter((item) => item.state === column.id),
     })),
     summary,
+  };
+}
+
+export function buildThreadSessionMapModel(
+  snapshot: RuntimeSnapshot,
+  timeline: TimelineEvent[],
+  options: Pick<DashboardModelOptions, "nowMs" | "activeSessionStaleAfterMs"> = {},
+): ThreadSessionMapModel {
+  const nowMs = options.nowMs ?? Date.now();
+  const activeSessionStaleAfterMs =
+    options.activeSessionStaleAfterMs ?? DEFAULT_ACTIVE_SESSION_STALE_AFTER_MS;
+  const agentsById = mapBy(snapshot.agents, (agent) => agent.id);
+  const sessionsByKey = mapBy(snapshot.sessions, (session) => session.key);
+  const sessionParentHints = buildSessionParentHints(timeline);
+  const childSessionsByParent = new Map<string, SessionSummary[]>();
+  const tasksBySession = new Map<string, TaskSummary[]>();
+  const approvalsBySession = new Map<string, ApprovalSummary[]>();
+  const metadataGaps = new Set<string>();
+
+  for (const session of snapshot.sessions) {
+    const parentKey = parentKeyForSession(session, sessionParentHints);
+    if (!parentKey || parentKey === session.key) continue;
+    const children = childSessionsByParent.get(parentKey) ?? [];
+    children.push(session);
+    childSessionsByParent.set(parentKey, children);
+  }
+
+  for (const task of snapshot.tasks) {
+    if (!task.sessionKey) continue;
+    const tasks = tasksBySession.get(task.sessionKey) ?? [];
+    tasks.push(task);
+    tasksBySession.set(task.sessionKey, tasks);
+  }
+
+  for (const approval of snapshot.approvals) {
+    if (!approval.sessionKey) continue;
+    const approvals = approvalsBySession.get(approval.sessionKey) ?? [];
+    approvals.push(approval);
+    approvalsBySession.set(approval.sessionKey, approvals);
+  }
+
+  const context = {
+    agentsById,
+    sessionsByKey,
+    sessionParentHints,
+    childSessionsByParent,
+    tasksBySession,
+    approvalsBySession,
+    nowMs,
+    activeSessionStaleAfterMs,
+    metadataGaps,
+  };
+
+  const entries: ThreadSessionMapEntry[] = [];
+  for (const session of snapshot.sessions) entries.push(threadSessionMapEntryForSession(session, context));
+
+  for (const task of snapshot.tasks.filter((candidate) => !candidate.sessionKey || !sessionsByKey.has(candidate.sessionKey))) {
+    entries.push(threadSessionMapEntryForOrphanedTask(task, context));
+  }
+
+  for (const approval of snapshot.approvals.filter(
+    (candidate) => !candidate.sessionKey || !sessionsByKey.has(candidate.sessionKey),
+  )) {
+    entries.push(threadSessionMapEntryForOrphanedApproval(approval, context));
+  }
+
+  entries.sort(compareThreadSessionMapEntries);
+
+  return {
+    entries,
+    summary: {
+      total: entries.length,
+      channels: entries.filter((entry) => entry.source.kind === "channel").length,
+      threads: entries.filter((entry) => entry.source.kind === "thread").length,
+      sessions: entries.filter((entry) => entry.source.kind === "session").length,
+      orphanedTasks: entries.filter((entry) => entry.source.kind === "task").length,
+      orphanedApprovals: entries.filter((entry) => entry.source.kind === "approval").length,
+      partialLineage: entries.filter((entry) => entry.lineage.quality === "partial").length,
+      missingLineage: entries.filter((entry) => entry.lineage.quality === "missing").length,
+    },
+    metadataGaps: [...metadataGaps].sort(),
+  };
+}
+
+type ThreadSessionMapContext = {
+  agentsById: Map<string, AgentSummary>;
+  sessionsByKey: Map<string, SessionSummary>;
+  sessionParentHints: Map<string, string>;
+  childSessionsByParent: Map<string, SessionSummary[]>;
+  tasksBySession: Map<string, TaskSummary[]>;
+  approvalsBySession: Map<string, ApprovalSummary[]>;
+  nowMs: number;
+  activeSessionStaleAfterMs: number;
+  metadataGaps: Set<string>;
+};
+
+function threadSessionMapEntryForSession(
+  session: SessionSummary,
+  context: ThreadSessionMapContext,
+): ThreadSessionMapEntry {
+  const source = sourceForSession(session, context.metadataGaps);
+  const childSessions = sortByActivityDesc(context.childSessionsByParent.get(session.key) ?? []);
+  const relatedSessions = [session, ...childSessions];
+  const tasks = sortUniqueTasks([
+    ...(context.tasksBySession.get(session.key) ?? []),
+    ...childSessions.flatMap((child) => context.tasksBySession.get(child.key) ?? []),
+  ]);
+  const approvals = sortUniqueApprovals([
+    ...(context.approvalsBySession.get(session.key) ?? []),
+    ...childSessions.flatMap((child) => context.approvalsBySession.get(child.key) ?? []),
+  ]);
+  const agents = agentsForWorkItem({ sessions: relatedSessions, tasks, approvals }, context.agentsById);
+  const parentKey = parentKeyForSession(session, context.sessionParentHints);
+  const parentSession = parentKey ? context.sessionsByKey.get(parentKey) : undefined;
+  const state = stateForThreadSessionMapEntry({ sessions: relatedSessions, tasks, approvals, source }, context);
+  const primaryTask = primaryTaskForWorkItem(tasks);
+  const primaryApproval = approvals.find((approval) => approval.status === "pending") ?? approvals[0];
+  const primaryAgentId = session.agentId ?? primaryTask?.agentId ?? primaryApproval?.agentId ?? agents[0]?.id;
+  const lineage = appendThreadSessionSourceDiagnostics(
+    lineageForWorkItem({ sessions: relatedSessions, tasks, approvals }, context),
+    source,
+  );
+
+  return {
+    id: `session:${session.key}`,
+    source,
+    parentSession,
+    childSessions,
+    sessions: relatedSessions,
+    tasks,
+    runIds: runIdsFor({ sessions: relatedSessions, tasks }),
+    approvals,
+    agents,
+    state,
+    tone: toneForThreadSessionMapState(state),
+    lineage,
+    updatedAt: newestTimestamp([
+      session.updatedAt ?? session.lastInteractionAt,
+      ...childSessions.map((child) => child.updatedAt ?? child.lastInteractionAt),
+      ...tasks.map((task) => task.endedAt ?? task.startedAt),
+      ...approvals.map((approval) => approval.requestedAt),
+    ]),
+    links: {
+      ...linksFor({
+        agentId: primaryAgentId,
+        sessionKey: session.key,
+        taskId: primaryTask?.id,
+        approvalId: primaryApproval?.status === "pending" ? primaryApproval.id : undefined,
+      }),
+      discord: source.permalink,
+    },
+  };
+}
+
+function threadSessionMapEntryForOrphanedTask(
+  task: TaskSummary,
+  context: ThreadSessionMapContext,
+): ThreadSessionMapEntry {
+  const agent = task.agentId ? context.agentsById.get(task.agentId) : undefined;
+  const source = {
+    kind: "task",
+    key: task.id,
+    label: task.title ?? task.id,
+    metadataSource: "missing",
+  } satisfies ThreadSessionMapSource;
+  const lineage = lineageForWorkItem({ sessions: [], tasks: [task], approvals: [] }, context);
+  const state = stateForThreadSessionMapEntry({ sessions: [], tasks: [task], approvals: [], source }, context);
+
+  return {
+    id: `task:${task.id}`,
+    source,
+    childSessions: [],
+    sessions: [],
+    tasks: [task],
+    runIds: runIdsFor({ sessions: [], tasks: [task] }),
+    approvals: [],
+    agents: agent ? [agent] : [],
+    state,
+    tone: toneForThreadSessionMapState(state),
+    lineage,
+    updatedAt: task.endedAt ?? task.startedAt,
+    links: linksFor({ agentId: task.agentId, sessionKey: task.sessionKey, taskId: task.id }),
+  };
+}
+
+function threadSessionMapEntryForOrphanedApproval(
+  approval: ApprovalSummary,
+  context: ThreadSessionMapContext,
+): ThreadSessionMapEntry {
+  const agent = approval.agentId ? context.agentsById.get(approval.agentId) : undefined;
+  const source = {
+    kind: "approval",
+    key: approval.id,
+    label: approval.command ?? approval.id,
+    metadataSource: "missing",
+  } satisfies ThreadSessionMapSource;
+  const lineage = lineageForWorkItem({ sessions: [], tasks: [], approvals: [approval] }, context);
+  const state = stateForThreadSessionMapEntry({ sessions: [], tasks: [], approvals: [approval], source }, context);
+
+  return {
+    id: `approval:${approval.id}`,
+    source,
+    childSessions: [],
+    sessions: [],
+    tasks: [],
+    runIds: [],
+    approvals: [approval],
+    agents: agent ? [agent] : [],
+    state,
+    tone: toneForThreadSessionMapState(state),
+    lineage,
+    updatedAt: approval.requestedAt,
+    links: linksFor({ agentId: approval.agentId, sessionKey: approval.sessionKey, approvalId: approval.id }),
   };
 }
 
@@ -1263,6 +1532,210 @@ function findWorkRootSession(
 
 function parentKeyForSession(session: SessionSummary, sessionParentHints: Map<string, string>): string | undefined {
   return session.parentSessionKey ?? session.spawnedBy ?? session.ownerSessionKey ?? sessionParentHints.get(session.key);
+}
+
+function sourceForSession(session: SessionSummary, metadataGaps: Set<string>): ThreadSessionMapSource {
+  const raw = session as unknown as Record<string, unknown>;
+  const keySource = sourceFromSessionKey(session.key);
+  const rawPlatform = pickRawString(raw, "platform");
+  const rawChannelId = pickRawString(raw, "channelId");
+  const rawChannelName = pickRawString(raw, "channelName");
+  const rawThreadId = pickRawString(raw, "threadId");
+  const rawThreadName = pickRawString(raw, "threadName");
+  const permalink = pickRawString(raw, "permalink", "url", "discordUrl");
+  const archived = pickRawBoolean(raw, "archived", "archivedOrHidden", "hidden");
+  const kind = keySource.kind ?? (rawThreadId ? "thread" : rawChannelId ? "channel" : "session");
+  const metadataSource = rawPlatform || rawChannelId || rawChannelName || rawThreadId || rawThreadName || permalink || archived !== undefined ? "raw" : keySource.key ? "key" : "missing";
+
+  if ((kind === "channel" || kind === "thread") && metadataSource === "key") {
+    metadataGaps.add(
+      "Discord source metadata is inferred from session keys because channel/thread ids, archive state, and permalinks are not normalized in RuntimeSnapshot.",
+    );
+  }
+
+  return {
+    kind,
+    key: session.key,
+    label: sourceLabelForSession(session, kind, rawChannelName, rawThreadName),
+    platform: rawPlatform ?? (kind === "channel" || kind === "thread" ? "discord" : undefined),
+    channelId: rawChannelId ?? keySource.channelId,
+    channelName: rawChannelName,
+    threadId: rawThreadId ?? keySource.threadId,
+    threadName: rawThreadName ?? (kind === "thread" ? stripThreadLabel(session.label) ?? keySource.threadId : undefined),
+    permalink,
+    archived,
+    metadataSource,
+  };
+}
+
+function sourceFromSessionKey(key: string): {
+  kind?: Extract<ThreadSessionMapSourceKind, "channel" | "thread">;
+  key?: string;
+  channelId?: string;
+  threadId?: string;
+} {
+  const channelMarker = ":discord:channel:";
+  const threadMarker = ":discord:thread:";
+  const channelIndex = key.indexOf(channelMarker);
+  if (channelIndex >= 0) {
+    return { kind: "channel", key, channelId: key.slice(channelIndex + channelMarker.length) || undefined };
+  }
+  const threadIndex = key.indexOf(threadMarker);
+  if (threadIndex >= 0) {
+    return { kind: "thread", key, threadId: key.slice(threadIndex + threadMarker.length) || undefined };
+  }
+  return {};
+}
+
+function sourceLabelForSession(
+  session: SessionSummary,
+  kind: ThreadSessionMapSourceKind,
+  channelName?: string,
+  threadName?: string,
+): string {
+  if (kind === "channel" && channelName) return `#${channelName}`;
+  if (kind === "thread" && threadName) return threadName;
+  if (kind === "thread") return stripThreadLabel(session.label) ?? shortSessionKey(session.key);
+  return session.label ?? shortSessionKey(session.key);
+}
+
+function stripThreadLabel(label: string | undefined): string | undefined {
+  return label?.replace(/^thread:\s*/i, "");
+}
+
+function pickRawString(raw: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = raw[key];
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return undefined;
+}
+
+function pickRawBoolean(raw: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    const value = raw[key];
+    if (typeof value === "boolean") return value;
+  }
+  return undefined;
+}
+
+function appendThreadSessionSourceDiagnostics(
+  lineage: WorkItemLineage,
+  source: ThreadSessionMapSource,
+): WorkItemLineage {
+  if ((source.kind !== "channel" && source.kind !== "thread") || source.metadataSource !== "key") return lineage;
+  const diagnostic = "Discord source binding is inferred from the session key; normalized channel/thread metadata and permalink are unavailable.";
+  if (lineage.quality === "complete") return { quality: "partial", diagnostic: `Lineage incomplete: ${diagnostic}` };
+  return {
+    quality: lineage.quality,
+    diagnostic: lineage.diagnostic ? `${lineage.diagnostic} ${diagnostic}` : diagnostic,
+  };
+}
+
+function stateForThreadSessionMapEntry(
+  input: {
+    sessions: SessionSummary[];
+    tasks: TaskSummary[];
+    approvals: ApprovalSummary[];
+    source: ThreadSessionMapSource;
+  },
+  context: Pick<ThreadSessionMapContext, "nowMs" | "activeSessionStaleAfterMs">,
+): ThreadSessionMapState {
+  if (
+    input.tasks.some((task) => task.status === "failed" || task.status === "timed_out") ||
+    input.sessions.some((session) => normalizeWorkStatusText(session.status) === "failed" || normalizeWorkStatusText(session.status) === "lost")
+  ) {
+    return "failed";
+  }
+  if (input.approvals.some((approval) => approval.status === "pending")) return "waiting";
+  if (
+    input.sessions.some(
+      (session) =>
+        Boolean(session.isActive || session.currentRunId) &&
+        isOlderThan(session.updatedAt ?? session.lastInteractionAt, context.nowMs, context.activeSessionStaleAfterMs),
+    )
+  ) {
+    return "stale";
+  }
+  if (
+    input.tasks.some((task) => task.status === "running") ||
+    input.sessions.some((session) => session.isActive || session.currentRunId || normalizeWorkStatusText(session.status) === "running")
+  ) {
+    return "active";
+  }
+  if (input.tasks.some((task) => task.status === "queued") || input.sessions.some((session) => normalizeWorkStatusText(session.status) === "queued")) return "queued";
+  if (input.source.archived || input.sessions.some((session) => normalizeThreadMapStatusText(session.status) === "archived")) return "archived";
+  if (input.tasks.some((task) => task.status === "completed") || input.sessions.some((session) => normalizeWorkStatusText(session.status) === "completed")) return "completed";
+  return "unknown";
+}
+
+function normalizeThreadMapStatusText(status: string | undefined): "archived" | undefined {
+  if (!status) return undefined;
+  const normalized = status.toLowerCase().replace(/[ -]/g, "_");
+  if (normalized === "archived" || normalized === "hidden" || normalized === "archived_or_hidden") return "archived";
+  return undefined;
+}
+
+function toneForThreadSessionMapState(state: ThreadSessionMapState): AttentionTone | "ok" {
+  if (state === "failed") return "error";
+  if (state === "waiting" || state === "queued" || state === "stale") return "warn";
+  if (state === "archived" || state === "unknown") return "info";
+  return "ok";
+}
+
+function runIdsFor(input: { sessions: SessionSummary[]; tasks: TaskSummary[] }): string[] {
+  return dedupe([...input.sessions.map((session) => session.currentRunId), ...input.tasks.map((task) => task.runId)]).sort();
+}
+
+function sortUniqueTasks(tasks: TaskSummary[]): TaskSummary[] {
+  const byId = new Map<string, TaskSummary>();
+  for (const task of tasks) byId.set(task.id, task);
+  return [...byId.values()].sort(compareTasksByActivityDesc);
+}
+
+function sortUniqueApprovals(approvals: ApprovalSummary[]): ApprovalSummary[] {
+  const byId = new Map<string, ApprovalSummary>();
+  for (const approval of approvals) byId.set(approval.id, approval);
+  return [...byId.values()].sort(compareApprovalsByActivityDesc);
+}
+
+function compareThreadSessionMapEntries(a: ThreadSessionMapEntry, b: ThreadSessionMapEntry): number {
+  const stateRank = rankThreadSessionMapState(a.state) - rankThreadSessionMapState(b.state);
+  if (stateRank !== 0) return stateRank;
+  const sourceRank = rankThreadSessionSourceKind(a.source.kind) - rankThreadSessionSourceKind(b.source.kind);
+  if (sourceRank !== 0) return sourceRank;
+  const timeRank = parseTime(b.updatedAt) - parseTime(a.updatedAt);
+  if (timeRank !== 0) return timeRank;
+  return a.source.label.localeCompare(b.source.label);
+}
+
+function rankThreadSessionMapState(state: ThreadSessionMapState): number {
+  switch (state) {
+    case "waiting":
+      return 0;
+    case "failed":
+      return 1;
+    case "stale":
+      return 2;
+    case "active":
+      return 3;
+    case "queued":
+      return 4;
+    case "unknown":
+      return 5;
+    case "completed":
+      return 6;
+    case "archived":
+      return 7;
+  }
+}
+
+function rankThreadSessionSourceKind(kind: ThreadSessionMapSourceKind): number {
+  if (kind === "thread") return 0;
+  if (kind === "channel") return 1;
+  if (kind === "session") return 2;
+  if (kind === "task") return 3;
+  return 4;
 }
 
 function stateForWorkItem(input: {

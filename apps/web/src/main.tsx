@@ -8,6 +8,7 @@ import { CommandCenterPage } from "./pages/CommandCenter";
 import { TimelinePage } from "./pages/Timeline";
 import { WorkBoardPage } from "./pages/WorkBoard";
 import { WorkGraphPage } from "./pages/WorkGraph";
+import { ThreadMapPage } from "./pages/ThreadMap";
 import { AgentOfficeLayout } from "./pages/agents/AgentOfficeLayout";
 import { AgentOverview } from "./pages/agents/AgentOverview";
 import { AgentSessionsView } from "./pages/agents/AgentSessionsView";
@@ -42,6 +43,7 @@ createRoot(document.getElementById("root")!).render(
               <Route path="timeline" element={<TimelinePage />} />
               <Route path="work" element={<WorkBoardPage />} />
               <Route path="graph" element={<WorkGraphPage />} />
+              <Route path="map" element={<ThreadMapPage />} />
               <Route path="agents" element={<AgentOfficeLayout />}>
                 <Route index element={<AgentOverview />} />
                 <Route path=":agentId" element={<AgentSessionsView />} />
