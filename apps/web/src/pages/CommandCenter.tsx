@@ -5,6 +5,7 @@ import {
   type AttentionTone,
   type ControlCenterItem,
   type ControlCenterLane,
+  type OperatorAction,
   type WorkGraphModel,
   type WorkGraphNode,
   type WorkGraphStatus,
@@ -210,6 +211,25 @@ function ControlCenterWorkCard({ item }: { item: ControlCenterItem }) {
         {lastUpdated ? ` · updated ${formatAge(lastUpdated)}` : ""}
       </div>
       <div className="stat-label">Next: {item.nextAction}</div>
+      {item.operatorActions?.length ? <OperatorActionChips actions={item.operatorActions} /> : null}
+    </div>
+  );
+}
+
+function OperatorActionChips({ actions }: { actions: OperatorAction[] }) {
+  const visible = actions.filter((action) => action.enabled || action.kind !== "navigation").slice(0, 5);
+  if (visible.length === 0) return null;
+  return (
+    <div className="operator-action-chips" aria-label="Safe action affordances">
+      {visible.map((action) =>
+        action.enabled && action.href ? (
+          <Link key={action.id} className="operator-action-chip" to={action.href}>{action.label}</Link>
+        ) : (
+          <span key={action.id} className="operator-action-chip operator-action-chip-disabled" title={action.disabledReason ?? "Action unavailable"}>
+            {action.label} unavailable: {action.disabledReason ?? "missing backend action metadata"}
+          </span>
+        ),
+      )}
     </div>
   );
 }
