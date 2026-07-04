@@ -1810,6 +1810,47 @@ textarea {
   font-size: 0.85rem;
 }
 
+.delivery-recovery-card {
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: grid;
+  gap: 0.45rem;
+  padding: 0.65rem;
+}
+
+.delivery-recovery-head,
+.delivery-recovery-links {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.delivery-recovery-card p {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  margin: 0;
+}
+
+.delivery-recovery-links {
+  font-size: 0.8rem;
+}
+
+.delivery-recovery-failed-delivery,
+.delivery-recovery-lost-parent {
+  border-color: color-mix(in srgb, var(--error) 55%, var(--border));
+}
+
+.delivery-recovery-queued,
+.delivery-recovery-silent-terminal {
+  border-color: color-mix(in srgb, var(--warn) 55%, var(--border));
+}
+
+.task-detail-delivery-card {
+  background: transparent;
+}
+
 .operator-action-chips {
   display: flex;
   flex-wrap: wrap;
@@ -2096,6 +2137,19 @@ textarea {
   border: 1px solid rgba(239, 68, 68, 0.22);
   border-radius: 10px;
   padding: 0.75rem;
+}
+
+.work-graph-delivery-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: grid;
+  gap: 0.45rem;
+  margin-bottom: 0.75rem;
+  padding: 0.7rem;
+}
+
+.work-graph-delivery-card p {
+  margin: 0;
 }
 
 .work-graph-links {

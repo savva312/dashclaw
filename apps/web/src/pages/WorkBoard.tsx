@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAppState } from "../context";
-import { buildDashboardModel, type AttentionTone, type OperatorAction, type ReviewItem, type WorkBoardColumn, type WorkItem } from "../runtime/dashboard";
+import { buildDashboardModel, type AttentionTone, type DeliveryRecoveryState, type OperatorAction, type ReviewItem, type WorkBoardColumn, type WorkItem } from "../runtime/dashboard";
 
 function badgeClassForTone(tone: AttentionTone | "ok") {
   if (tone === "ok") return "ok";
@@ -60,6 +60,9 @@ function matchesQuery(item: WorkItem, query: string): boolean {
     ...item.evidence.sessions.map((session) => `${session.label ?? ""} ${session.key} ${session.status ?? ""}`),
     ...item.evidence.tasks.map((task) => `${task.title ?? ""} ${task.id} ${task.runId ?? ""} ${task.status}`),
     ...item.evidence.approvals.map((approval) => `${approval.id} ${approval.command ?? ""} ${approval.status}`),
+    item.deliveryRecovery.label,
+    item.deliveryRecovery.status,
+    item.deliveryRecovery.summary,
   ]
     .filter(Boolean)
     .join(" ")
@@ -244,7 +247,7 @@ function ReviewQueueCard({ item }: { item: ReviewItem }) {
       <div className="work-board-review-meta">
         <span className={`badge ${badgeClassForTone(item.tone)}`}>{item.kind}</span>
         {item.sinceLastSeen ? <span className="badge warn">since last seen</span> : null}
-        <span className="stat-label">{item.deliveryStatus}</span>
+        <span className={`badge ${badgeClassForTone(item.deliveryRecovery.tone === "neutral" ? "info" : item.deliveryRecovery.tone)}`}>{item.deliveryRecovery.label}</span>
       </div>
       <div className="work-board-next">Next: {item.nextAction}</div>
     </div>
@@ -280,6 +283,7 @@ function WorkBoardCard({ item, compact = false }: { item: WorkItem; compact?: bo
           <dd>{item.ageLabel}{item.updatedAt ? ` · ${new Date(item.updatedAt).toLocaleTimeString()}` : ""}</dd>
         </div>
       </dl>
+      <DeliveryRecoveryCard delivery={item.deliveryRecovery} compact={compact} />
       {item.currentAction ? <div className="work-board-next">Current: {item.currentAction}</div> : null}
       {item.operatorActions?.length ? <OperatorActionChips actions={item.operatorActions} /> : null}
       {incomplete ? <div className="badge warn">{item.lineage.diagnostic ?? "lineage incomplete"}</div> : null}
@@ -291,6 +295,39 @@ function WorkBoardCard({ item, compact = false }: { item: WorkItem; compact?: bo
         <Link to="/graph">Graph</Link>
       </div>
     </article>
+  );
+}
+
+function DeliveryRecoveryCard({ delivery, compact }: { delivery: DeliveryRecoveryState; compact?: boolean }) {
+  if (compact && delivery.status === "unknown") return null;
+  return (
+    <div className={`delivery-recovery-card delivery-recovery-${delivery.status}`}>
+      <div className="delivery-recovery-head">
+        <span className={`badge ${badgeClassForTone(delivery.tone === "neutral" ? "info" : delivery.tone)}`}>{delivery.label}</span>
+        <span className="stat-label">result delivery/recovery</span>
+      </div>
+      <p>{delivery.summary}</p>
+      {delivery.evidence.length ? (
+        <div className="delivery-recovery-links" aria-label="Delivery recovery evidence">
+          {delivery.evidence.map((evidence) =>
+            evidence.href ? (
+              <Link key={`${evidence.label}:${evidence.href}`} to={evidence.href}>{evidence.label}</Link>
+            ) : (
+              <span key={`${evidence.label}:${evidence.detail ?? "detail"}`}>{evidence.label}: {evidence.detail}</span>
+            ),
+          )}
+        </div>
+      ) : null}
+      {delivery.status !== "delivered" ? (
+        <div className="operator-action-chips" aria-label="Disabled recovery actions">
+          {delivery.disabledActions.map((action) => (
+            <span key={action.label} className="operator-action-chip operator-action-chip-disabled" title={action.disabledReason}>
+              {action.label} unavailable: {action.disabledReason}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

@@ -350,13 +350,16 @@ function discordWorkflowScenarioData(common: FakeGatewayScenarioData): FakeGatew
         kind: "acp",
         parentTaskId: "task-work-board",
         parentSessionKey: workBoardThread,
+        deliveryState: "queued",
       }),
       task("task-thread-summary", "completed", "Publish fixture summary to thread", "dashclaw", completedThread, "run-thread-summary", -28 * 60_000, -20 * 60_000, undefined, {
         kind: "discord-thread",
+        deliveryState: "delivered",
         finalSummary: "Completed summary was delivered to Discord.",
       }),
       task("task-failed-delivery", "failed", "Investigate failed delivery", "dashclaw", failedThread, "run-failed-delivery", -25 * 60_000, -12 * 60_000, "Discord result delivery failed after thread handoff", {
         kind: "discord-thread",
+        deliveryState: "failed-delivery",
       }),
       task("task-lost-background-result", "timed_out", "Recover orphaned subagent result", "fixture-model", "agent:fixture-model:subagent:missing-delivery", "run-lost-result", -90 * 60_000, -45 * 60_000, "parent thread unavailable before result delivery", {
         kind: "subagent",

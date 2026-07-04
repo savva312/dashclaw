@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useAppState } from "../context";
 import {
   buildDashboardModel,
+  type DeliveryRecoveryState,
   type RuntimeLinks,
   type WorkGraphEdge,
   type WorkGraphModel,
@@ -324,6 +325,18 @@ function WorkGraphDetail({ node }: { node: WorkGraphNode }) {
         <DetailRow label="parent" value={node.parentId} mono />
         <DetailRow label="updated" value={formatTime(node.updatedAt)} />
       </dl>
+      {node.deliveryRecovery ? (
+        <div className="work-graph-delivery-card">
+          <div className="work-graph-detail-head">
+            <span className={`badge ${badgeClassForDeliveryTone(node.deliveryRecovery.tone)}`}>{node.deliveryRecovery.label}</span>
+            <span className="badge neutral">delivery</span>
+          </div>
+          <p className="stat-label">{node.deliveryRecovery.summary}</p>
+          {node.deliveryRecovery.needsRecovery ? (
+            <p className="stat-label">Recovery actions are read-only here; open the task for evidence and safety reasons.</p>
+          ) : null}
+        </div>
+      ) : null}
       {node.task?.error ? <p className="work-graph-error">{node.task.error}</p> : null}
       <GraphLinks links={node.links} />
       {node.children.length > 0 ? (
@@ -349,6 +362,13 @@ function DetailRow({ label, value, mono = false }: { label: string; value?: stri
       <dd className={mono ? "mono" : undefined}>{value}</dd>
     </>
   );
+}
+
+function badgeClassForDeliveryTone(tone: DeliveryRecoveryState["tone"]): string {
+  if (tone === "ok") return "ok";
+  if (tone === "error") return "error";
+  if (tone === "warn") return "warn";
+  return "neutral";
 }
 
 function GraphLinks({ links }: { links: RuntimeLinks }) {
