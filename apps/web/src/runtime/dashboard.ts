@@ -136,6 +136,87 @@ export interface InterventionSummary {
   items: AttentionItem[];
 }
 
+export type ControlCenterLane =
+  | "activeNow"
+  | "waitingOnMe"
+  | "attention"
+  | "recentlyCompleted"
+  | "failedRecoverable";
+
+export interface ControlCenterItem {
+  id: string;
+  lane: ControlCenterLane;
+  tone: AttentionTone | "ok";
+  title: string;
+  summary?: string;
+  status: string;
+  agentLabel?: string;
+  sessionLabel?: string;
+  currentAction?: string;
+  nextAction: string;
+  startedAt?: string;
+  updatedAt?: string;
+  completedAt?: string;
+  links: RuntimeLinks;
+  agent?: AgentSummary;
+  session?: SessionSummary;
+  task?: TaskSummary;
+  approval?: ApprovalSummary;
+}
+
+export interface ControlCenterOverview {
+  activeNow: ControlCenterItem[];
+  waitingOnMe: ControlCenterItem[];
+  attention: ControlCenterItem[];
+  recentlyCompleted: ControlCenterItem[];
+  failedRecoverable: ControlCenterItem[];
+}
+
+export type WorkItemState = "inbox" | "active" | "waiting" | "review" | "done" | "failed";
+export type WorkItemLineageQuality = "complete" | "partial" | "missing";
+
+export interface WorkItemEvidence {
+  agents: AgentSummary[];
+  sessions: SessionSummary[];
+  tasks: TaskSummary[];
+  approvals: ApprovalSummary[];
+  events: TimelineEvent[];
+}
+
+export interface WorkItemLineage {
+  quality: WorkItemLineageQuality;
+  diagnostic?: string;
+}
+
+export interface WorkItem {
+  id: string;
+  title: string;
+  state: WorkItemState;
+  tone: AttentionTone | "ok";
+  summary?: string;
+  ageLabel: string;
+  createdAt?: string;
+  updatedAt?: string;
+  agentLabel?: string;
+  sessionLabel?: string;
+  currentAction?: string;
+  lineage: WorkItemLineage;
+  evidence: WorkItemEvidence;
+  links: RuntimeLinks;
+}
+
+export interface WorkBoardColumn {
+  id: WorkItemState;
+  label: string;
+  items: WorkItem[];
+}
+
+export interface WorkBoardModel {
+  items: WorkItem[];
+  columns: WorkBoardColumn[];
+  summary: Record<WorkItemState, number>;
+}
+
 export interface RuntimeStatusSummary {
   tone: AttentionTone | "ok";
   label: string;
@@ -159,6 +240,8 @@ export interface DashboardModel {
   };
   agents: AgentWorkSummary[];
   activeWork: ActiveWorkItem[];
+  controlCenter: ControlCenterOverview;
+  workBoard: WorkBoardModel;
   workGraph: WorkGraphModel;
   attention: AttentionItem[];
   interventionSummary: InterventionSummary;
@@ -210,6 +293,7 @@ export function buildDashboardModel(
     nowMs,
     activeSessionStaleAfterMs,
   });
+  const workBoard = buildWorkBoardModel(snapshot, timeline, { nowMs });
   const attention = buildAttentionItems(snapshot, {
     agentsById,
     sessionsByKey,
@@ -249,6 +333,8 @@ export function buildDashboardModel(
     },
     agents,
     activeWork,
+    controlCenter: buildControlCenterOverview(snapshot, { activeWork, attention, pendingApprovals, failedTasks }),
+    workBoard,
     workGraph,
     attention,
     interventionSummary: buildInterventionSummary(attention),
@@ -347,6 +433,311 @@ export function buildInterventionSummary(attention: AttentionItem[]): Interventi
     counts,
     items: attention,
   };
+}
+
+function buildControlCenterOverview(
+  snapshot: RuntimeSnapshot,
+  context: {
+    activeWork: ActiveWorkItem[];
+    attention: AttentionItem[];
+    pendingApprovals: ApprovalSummary[];
+    failedTasks: TaskSummary[];
+  },
+): ControlCenterOverview {
+  const agentsById = mapBy(snapshot.agents, (agent) => agent.id);
+  const sessionsByKey = mapBy(snapshot.sessions, (session) => session.key);
+
+  const activeNow = context.activeWork.map((item) => ({
+    id: item.id,
+    lane: "activeNow",
+    tone: item.status === "queued" ? "warn" : "ok",
+    title: item.label,
+    summary: item.currentTool ? `Current tool: ${item.currentTool}` : undefined,
+    status: item.status,
+    agentLabel: labelForAgent(item.agent),
+    sessionLabel: labelForSession(item.session),
+    currentAction: item.currentTool,
+    nextAction: item.status === "queued" ? "Wait for the run to start, or inspect queue state." : "Monitor progress or open the linked task/session.",
+    startedAt: item.startedAt,
+    updatedAt: item.updatedAt,
+    links: item.links,
+    agent: item.agent,
+    session: item.session,
+    task: item.task,
+  }) satisfies ControlCenterItem);
+
+  const waitingOnMe = context.pendingApprovals
+    .map((approval) => {
+      const session = approval.sessionKey ? sessionsByKey.get(approval.sessionKey) : undefined;
+      const agentId = approval.agentId ?? session?.agentId;
+      const agent = agentId ? agentsById.get(agentId) : undefined;
+      const highRisk = isHighRiskApproval(approval);
+      return {
+        id: `approval:${approval.id}`,
+        lane: "waitingOnMe",
+        tone: highRisk ? "error" : "warn",
+        title: approval.kind === "exec" ? "Execution approval pending" : "Plugin approval pending",
+        summary: approval.command,
+        status: "pending approval",
+        agentLabel: labelForAgent(agent),
+        sessionLabel: labelForSession(session),
+        currentAction: approval.command,
+        nextAction: highRisk ? "Review command carefully before approving or denying." : "Approve or deny the pending request.",
+        updatedAt: approval.requestedAt,
+        links: linksFor({ agentId, sessionKey: session?.key ?? approval.sessionKey, approvalId: approval.id }),
+        agent,
+        session,
+        approval,
+      } satisfies ControlCenterItem;
+    })
+    .sort(compareControlCenterItems);
+
+  const attention = context.attention
+    .filter((item) => item.kind !== "approval" && item.kind !== "task-failed")
+    .map((item) => controlCenterItemFromAttention(item, "attention"));
+
+  const recentlyCompleted = snapshot.tasks
+    .filter((task) => task.status === "completed")
+    .map((task) => controlCenterItemFromTask(task, "recentlyCompleted", agentsById, sessionsByKey))
+    .sort(compareControlCenterItems)
+    .slice(0, 8);
+
+  const failedRecoverable = context.failedTasks
+    .map((task) => controlCenterItemFromTask(task, "failedRecoverable", agentsById, sessionsByKey))
+    .sort(compareControlCenterItems);
+
+  return {
+    activeNow,
+    waitingOnMe,
+    attention,
+    recentlyCompleted,
+    failedRecoverable,
+  };
+}
+
+type WorkItemSeed = {
+  key: string;
+  rootSession?: SessionSummary;
+  sessions: SessionSummary[];
+  tasks: TaskSummary[];
+  approvals: ApprovalSummary[];
+  events: TimelineEvent[];
+};
+
+const WORK_BOARD_COLUMNS: Array<{ id: WorkItemState; label: string }> = [
+  { id: "inbox", label: "Inbox / New" },
+  { id: "active", label: "Active" },
+  { id: "waiting", label: "Waiting" },
+  { id: "review", label: "Review" },
+  { id: "done", label: "Done / Recent" },
+  { id: "failed", label: "Failed / Recoverable" },
+];
+
+export function buildWorkBoardModel(
+  snapshot: RuntimeSnapshot,
+  timeline: TimelineEvent[],
+  options: Pick<DashboardModelOptions, "nowMs"> = {},
+): WorkBoardModel {
+  const nowMs = options.nowMs ?? Date.now();
+  const agentsById = mapBy(snapshot.agents, (agent) => agent.id);
+  const sessionsByKey = mapBy(snapshot.sessions, (session) => session.key);
+  const tasksById = mapBy(snapshot.tasks, (task) => task.id);
+  const sessionParentHints = buildSessionParentHints(timeline);
+  const parentSessionKeys = new Set(
+    snapshot.sessions
+      .map((session) => parentKeyForSession(session, sessionParentHints))
+      .filter((key): key is string => Boolean(key)),
+  );
+  const seeds = new Map<string, WorkItemSeed>();
+
+  const seedFor = (key: string, rootSession?: SessionSummary): WorkItemSeed => {
+    const existing = seeds.get(key);
+    if (existing) {
+      existing.rootSession ??= rootSession;
+      return existing;
+    }
+    const seed = { key, rootSession, sessions: [], tasks: [], approvals: [], events: [] } satisfies WorkItemSeed;
+    seeds.set(key, seed);
+    return seed;
+  };
+
+  const seedForSession = (session: SessionSummary): WorkItemSeed => {
+    const rootSession = findWorkRootSession(session, sessionsByKey, sessionParentHints);
+    return seedFor(`session:${rootSession.key}`, rootSession);
+  };
+
+  for (const session of snapshot.sessions) {
+    if (parentSessionKeys.has(session.key) && !hasSessionWorkSignal(session)) continue;
+    pushUnique(seedForSession(session).sessions, session, (candidate) => candidate.key);
+  }
+
+  for (const task of snapshot.tasks) {
+    const session = task.sessionKey ? sessionsByKey.get(task.sessionKey) : undefined;
+    const seed = session ? seedForSession(session) : seedFor(`task:${task.id}`);
+    pushUnique(seed.tasks, task, (candidate) => candidate.id);
+  }
+
+  for (const approval of snapshot.approvals) {
+    const session = approval.sessionKey ? sessionsByKey.get(approval.sessionKey) : undefined;
+    const seed = session ? seedForSession(session) : seedFor(`approval:${approval.id}`);
+    pushUnique(seed.approvals, approval, (candidate) => candidate.id);
+  }
+
+  for (const event of filterMeaningfulEvents(timeline)) {
+    const task = event.taskId ? tasksById.get(event.taskId) : undefined;
+    const sessionKey = task?.sessionKey ?? event.sessionKey;
+    const session = sessionKey ? sessionsByKey.get(sessionKey) : undefined;
+    const seed = session
+      ? seedForSession(session)
+      : task
+        ? seedFor(`task:${task.id}`)
+        : sessionKey || event.taskId
+          ? seedFor(`event:${event.id}`)
+          : undefined;
+    if (seed) pushUnique(seed.events, event, (candidate) => candidate.id);
+  }
+
+  const items = [...seeds.values()]
+    .map((seed) => workItemFromSeed(seed, { agentsById, sessionsByKey, sessionParentHints, nowMs }))
+    .sort(compareWorkItems);
+  const summary = emptyWorkBoardSummary();
+  for (const item of items) summary[item.state] += 1;
+
+  return {
+    items,
+    columns: WORK_BOARD_COLUMNS.map((column) => ({
+      ...column,
+      items: items.filter((item) => item.state === column.id),
+    })),
+    summary,
+  };
+}
+
+function workItemFromSeed(
+  seed: WorkItemSeed,
+  context: {
+    agentsById: Map<string, AgentSummary>;
+    sessionsByKey: Map<string, SessionSummary>;
+    sessionParentHints: Map<string, string>;
+    nowMs: number;
+  },
+): WorkItem {
+  const sessions = sortByActivityDesc(seed.sessions);
+  const tasks = [...seed.tasks].sort(compareTasksByActivityDesc);
+  const approvals = [...seed.approvals].sort(compareApprovalsByActivityDesc);
+  const events = filterMeaningfulEvents(seed.events).sort(compareEventsDesc).slice(0, 6);
+  const agents = agentsForWorkItem({ sessions, tasks, approvals }, context.agentsById);
+  const state = stateForWorkItem({ sessions, tasks, approvals });
+  const updatedAt = newestTimestamp([
+    ...sessions.map((session) => session.updatedAt ?? session.lastInteractionAt),
+    ...tasks.map((task) => task.endedAt ?? task.startedAt),
+    ...approvals.map((approval) => approval.requestedAt),
+    ...events.map((event) => event.timestamp),
+  ]);
+  const createdAt = oldestTimestamp([
+    ...tasks.map((task) => task.startedAt ?? task.endedAt),
+    ...approvals.map((approval) => approval.requestedAt),
+    ...events.map((event) => event.timestamp),
+    ...sessions.map((session) => session.updatedAt ?? session.lastInteractionAt),
+  ]);
+  const primarySession = seed.rootSession ?? sessions[0];
+  const primaryTask = primaryTaskForWorkItem(tasks);
+  const primaryApproval = approvals.find((approval) => approval.status === "pending") ?? approvals[0];
+  const primaryAgentId = primarySession?.agentId ?? primaryTask?.agentId ?? primaryApproval?.agentId ?? agents[0]?.id;
+  const primarySessionKey = primarySession?.key ?? primaryTask?.sessionKey ?? primaryApproval?.sessionKey;
+
+  return {
+    id: seed.key,
+    title: titleForWorkItem({ rootSession: seed.rootSession, sessions, tasks, approvals, events }),
+    state,
+    tone: toneForWorkItemState(state),
+    summary: summaryForWorkItem({ state, sessions, tasks, approvals, events }),
+    ageLabel: formatAge(createdAt ?? updatedAt, context.nowMs),
+    createdAt,
+    updatedAt,
+    agentLabel: agents.map(labelForAgent).filter(Boolean).join(", ") || undefined,
+    sessionLabel: primarySession ? labelForSession(primarySession) : undefined,
+    currentAction: currentActionForWorkItem({ sessions, tasks, approvals }),
+    lineage: lineageForWorkItem({ sessions, tasks, approvals }, context),
+    evidence: { agents, sessions, tasks, approvals, events },
+    links: linksFor({
+      agentId: primaryAgentId,
+      sessionKey: primarySessionKey,
+      taskId: primaryTask?.id,
+      approvalId: primaryApproval?.status === "pending" ? primaryApproval.id : undefined,
+    }),
+  };
+}
+
+function controlCenterItemFromAttention(item: AttentionItem, lane: ControlCenterLane): ControlCenterItem {
+  return {
+    id: item.id,
+    lane,
+    tone: item.tone,
+    title: item.title,
+    summary: item.summary,
+    status: item.kind,
+    agentLabel: labelForAgent(item.agent),
+    sessionLabel: labelForSession(item.session),
+    nextAction: nextActionForAttention(item),
+    updatedAt: item.timestamp,
+    links: item.links,
+    agent: item.agent,
+    session: item.session,
+    task: item.task,
+    approval: item.approval,
+  };
+}
+
+function controlCenterItemFromTask(
+  task: TaskSummary,
+  lane: ControlCenterLane,
+  agentsById: Map<string, AgentSummary>,
+  sessionsByKey: Map<string, SessionSummary>,
+): ControlCenterItem {
+  const session = task.sessionKey ? sessionsByKey.get(task.sessionKey) : undefined;
+  const agentId = task.agentId ?? session?.agentId;
+  const agent = agentId ? agentsById.get(agentId) : undefined;
+  const failed = task.status === "failed" || task.status === "timed_out";
+  return {
+    id: `task:${task.id}`,
+    lane,
+    tone: failed ? "error" : "ok",
+    title: task.title ?? task.id,
+    summary: failed ? task.error ?? `Task ${task.status}.` : undefined,
+    status: task.status,
+    agentLabel: labelForAgent(agent),
+    sessionLabel: labelForSession(session),
+    nextAction: failed ? "Open task details, inspect the error, and retry or recover if appropriate." : "No action needed; open details if context is useful.",
+    startedAt: task.startedAt,
+    updatedAt: task.endedAt ?? task.startedAt,
+    completedAt: task.endedAt,
+    links: linksFor({ agentId, sessionKey: session?.key ?? task.sessionKey, taskId: task.id }),
+    agent,
+    session,
+    task,
+  };
+}
+
+function nextActionForAttention(item: AttentionItem): string {
+  switch (item.kind) {
+    case "gateway":
+    case "health":
+    case "stale-snapshot":
+    case "access":
+      return "Verify gateway/access state before relying on the dashboard.";
+    case "security-posture":
+      return "Review security posture before allowing more privileged work.";
+    case "lost-task":
+    case "stale-active-session":
+      return "Open the linked task/session and confirm whether work is still alive.";
+    case "long-running-task":
+      return "Check progress and decide whether to keep waiting or intervene.";
+    case "approval":
+      return "Approve or deny the pending request.";
+    case "task-failed":
+      return "Open task details, inspect the error, and retry or recover if appropriate.";
+  }
 }
 
 export function buildWorkGraphModel(
@@ -849,6 +1240,245 @@ function buildSessionParentHints(timeline: TimelineEvent[]): Map<string, string>
   return hints;
 }
 
+function findWorkRootSession(
+  session: SessionSummary,
+  sessionsByKey: Map<string, SessionSummary>,
+  sessionParentHints: Map<string, string>,
+): SessionSummary {
+  let current = session;
+  const seen = new Set<string>();
+
+  while (!seen.has(current.key)) {
+    seen.add(current.key);
+    if (isDiscordThreadSessionKey(current.key)) return current;
+
+    const parentKey = parentKeyForSession(current, sessionParentHints);
+    const parent = parentKey ? sessionsByKey.get(parentKey) : undefined;
+    if (!parent || parent.key === current.key) return current;
+    current = parent;
+  }
+
+  return session;
+}
+
+function parentKeyForSession(session: SessionSummary, sessionParentHints: Map<string, string>): string | undefined {
+  return session.parentSessionKey ?? session.spawnedBy ?? session.ownerSessionKey ?? sessionParentHints.get(session.key);
+}
+
+function stateForWorkItem(input: {
+  sessions: SessionSummary[];
+  tasks: TaskSummary[];
+  approvals: ApprovalSummary[];
+}): WorkItemState {
+  if (input.tasks.some((task) => task.status === "failed" || task.status === "timed_out")) return "failed";
+  if (input.approvals.some((approval) => approval.status === "pending")) return "waiting";
+  if (input.sessions.some(hasReviewStatus)) return "review";
+  if (
+    input.tasks.some((task) => task.status === "running") ||
+    input.sessions.some((session) => session.isActive || session.currentRunId || normalizeWorkStatusText(session.status) === "running") ||
+    input.tasks.some((task) => task.status === "queued" && Boolean(task.startedAt))
+  ) {
+    return "active";
+  }
+  if (input.tasks.some((task) => task.status === "queued") || input.sessions.some((session) => normalizeWorkStatusText(session.status) === "queued")) {
+    return "inbox";
+  }
+  if (input.tasks.some((task) => task.status === "completed") || input.sessions.some((session) => normalizeWorkStatusText(session.status) === "completed")) {
+    return "done";
+  }
+  return "inbox";
+}
+
+function toneForWorkItemState(state: WorkItemState): WorkItem["tone"] {
+  if (state === "failed") return "error";
+  if (state === "waiting") return "warn";
+  if (state === "inbox" || state === "review") return "info";
+  return "ok";
+}
+
+function titleForWorkItem(input: {
+  rootSession?: SessionSummary;
+  sessions: SessionSummary[];
+  tasks: TaskSummary[];
+  approvals: ApprovalSummary[];
+  events: TimelineEvent[];
+}): string {
+  const label = input.rootSession?.label ?? input.sessions[0]?.label;
+  if (label) return label.replace(/^thread:\s*/i, "");
+  const task = primaryTaskForWorkItem(input.tasks);
+  if (task?.title) return task.title;
+  const approval = input.approvals[0];
+  if (approval) return approval.kind === "exec" ? "Execution approval" : "Plugin approval";
+  return input.events[0]?.title ?? input.rootSession?.key ?? "Untitled work item";
+}
+
+function summaryForWorkItem(input: {
+  state: WorkItemState;
+  sessions: SessionSummary[];
+  tasks: TaskSummary[];
+  approvals: ApprovalSummary[];
+  events: TimelineEvent[];
+}): string | undefined {
+  const failedTask = input.tasks.find((task) => task.status === "failed" || task.status === "timed_out");
+  if (failedTask) return failedTask.error ?? `${failedTask.title ?? failedTask.id} ${failedTask.status}.`;
+
+  const approval = input.approvals.find((candidate) => candidate.status === "pending");
+  if (approval) return approval.command ?? `${approval.kind} approval pending.`;
+
+  const sessionWithTool = input.sessions.find((session) => session.currentTool);
+  if (sessionWithTool?.currentTool) return `Current tool: ${sessionWithTool.currentTool}`;
+
+  const newestEvent = input.events[0];
+  if (newestEvent) return newestEvent.summary ?? newestEvent.title;
+
+  const task = primaryTaskForWorkItem(input.tasks);
+  if (task?.title && input.state !== "done") return task.title;
+  if (input.state === "done" && task?.title) return `${task.title} completed.`;
+  return undefined;
+}
+
+function currentActionForWorkItem(input: {
+  sessions: SessionSummary[];
+  tasks: TaskSummary[];
+  approvals: ApprovalSummary[];
+}): string | undefined {
+  const approval = input.approvals.find((candidate) => candidate.status === "pending");
+  if (approval) return approval.command;
+  const sessionWithTool = input.sessions.find((session) => session.currentTool);
+  if (sessionWithTool?.currentTool) return sessionWithTool.currentTool;
+  return primaryTaskForWorkItem(input.tasks)?.status;
+}
+
+function lineageForWorkItem(
+  input: { sessions: SessionSummary[]; tasks: TaskSummary[]; approvals: ApprovalSummary[] },
+  context: {
+    agentsById: Map<string, AgentSummary>;
+    sessionsByKey: Map<string, SessionSummary>;
+    sessionParentHints: Map<string, string>;
+  },
+): WorkItemLineage {
+  const diagnostics: string[] = [];
+
+  for (const session of input.sessions) {
+    const parentKey = parentKeyForSession(session, context.sessionParentHints);
+    if (parentKey && !context.sessionsByKey.has(parentKey)) diagnostics.push(`parent session missing for ${shortSessionKey(session.key)}`);
+    if (session.agentId && !context.agentsById.has(session.agentId)) diagnostics.push(`agent missing for ${shortSessionKey(session.key)}`);
+  }
+
+  for (const task of input.tasks) {
+    if (task.sessionKey && !context.sessionsByKey.has(task.sessionKey)) diagnostics.push(`task ${task.id} references missing session`);
+    if (!task.sessionKey && !task.agentId) diagnostics.push(`task ${task.id} has no session or agent`);
+    if (task.agentId && !context.agentsById.has(task.agentId)) diagnostics.push(`task ${task.id} references missing agent`);
+  }
+
+  for (const approval of input.approvals) {
+    if (approval.sessionKey && !context.sessionsByKey.has(approval.sessionKey)) diagnostics.push(`approval ${approval.id} references missing session`);
+    if (!approval.sessionKey && !approval.agentId) diagnostics.push(`approval ${approval.id} has no session or agent`);
+    if (approval.agentId && !context.agentsById.has(approval.agentId)) diagnostics.push(`approval ${approval.id} references missing agent`);
+  }
+
+  const hasRuntimeEvidence = input.sessions.length > 0 || input.tasks.some((task) => task.agentId || task.sessionKey);
+  if (!hasRuntimeEvidence) {
+    return {
+      quality: "missing",
+      diagnostic: diagnostics.length > 0 ? `Lineage missing: ${dedupe(diagnostics).join("; ")}.` : "Lineage missing: no session or agent evidence is available.",
+    };
+  }
+
+  if (diagnostics.length > 0) {
+    return { quality: "partial", diagnostic: `Lineage incomplete: ${dedupe(diagnostics).join("; ")}.` };
+  }
+
+  return { quality: "complete" };
+}
+
+function agentsForWorkItem(
+  input: { sessions: SessionSummary[]; tasks: TaskSummary[]; approvals: ApprovalSummary[] },
+  agentsById: Map<string, AgentSummary>,
+): AgentSummary[] {
+  const ids = dedupe([
+    ...input.sessions.map((session) => session.agentId),
+    ...input.tasks.map((task) => task.agentId),
+    ...input.approvals.map((approval) => approval.agentId),
+  ]);
+  return ids.flatMap((id) => (id ? [agentsById.get(id)].filter((agent): agent is AgentSummary => Boolean(agent)) : []));
+}
+
+function primaryTaskForWorkItem(tasks: TaskSummary[]): TaskSummary | undefined {
+  return [...tasks].sort((a, b) => {
+    const statusRank = rankWorkItemTaskStatus(a.status) - rankWorkItemTaskStatus(b.status);
+    if (statusRank !== 0) return statusRank;
+    return compareTasksByActivityDesc(a, b);
+  })[0];
+}
+
+function compareWorkItems(a: WorkItem, b: WorkItem): number {
+  const stateRank = rankWorkItemState(a.state) - rankWorkItemState(b.state);
+  if (stateRank !== 0) return stateRank;
+  const toneRank = rankControlCenterTone(a.tone) - rankControlCenterTone(b.tone);
+  if (toneRank !== 0) return toneRank;
+  return parseTime(b.updatedAt ?? b.createdAt) - parseTime(a.updatedAt ?? a.createdAt);
+}
+
+function rankWorkItemState(state: WorkItemState): number {
+  switch (state) {
+    case "waiting":
+      return 0;
+    case "failed":
+      return 1;
+    case "active":
+      return 2;
+    case "review":
+      return 3;
+    case "inbox":
+      return 4;
+    case "done":
+      return 5;
+  }
+}
+
+function rankWorkItemTaskStatus(status: TaskSummary["status"]): number {
+  if (status === "failed" || status === "timed_out") return 0;
+  if (status === "running") return 1;
+  if (status === "queued") return 2;
+  if (status === "completed") return 3;
+  return 4;
+}
+
+function compareTasksByActivityDesc(a: TaskSummary, b: TaskSummary): number {
+  return parseTime(b.endedAt ?? b.startedAt) - parseTime(a.endedAt ?? a.startedAt);
+}
+
+function compareApprovalsByActivityDesc(a: ApprovalSummary, b: ApprovalSummary): number {
+  return parseTime(b.requestedAt) - parseTime(a.requestedAt);
+}
+
+function emptyWorkBoardSummary(): Record<WorkItemState, number> {
+  return { inbox: 0, active: 0, waiting: 0, review: 0, done: 0, failed: 0 };
+}
+
+function hasReviewStatus(session: SessionSummary): boolean {
+  const normalized = session.status?.toLowerCase().replace(/[ -]/g, "_") ?? "";
+  return normalized === "review" || normalized === "needs_review" || normalized === "needs_human" || normalized === "paused";
+}
+
+function hasSessionWorkSignal(session: SessionSummary): boolean {
+  return Boolean(session.isActive || session.currentRunId || session.currentTool || session.status);
+}
+
+function isDiscordThreadSessionKey(key: string): boolean {
+  return key.includes(":discord:thread:");
+}
+
+function pushUnique<T>(items: T[], item: T, key: (item: T) => string): void {
+  const itemKey = key(item);
+  if (!items.some((candidate) => key(candidate) === itemKey)) items.push(item);
+}
+
+function dedupe<T>(values: Array<T | undefined>): T[] {
+  return [...new Set(values.filter((value): value is T => value !== undefined))];
+}
+
 function payloadString(payload: Record<string, unknown> | undefined, ...keys: string[]): string | undefined {
   if (!payload) return undefined;
   for (const key of keys) {
@@ -994,6 +1624,19 @@ function compareEventsDesc(a: TimelineEvent, b: TimelineEvent): number {
   return parseTime(b.timestamp) - parseTime(a.timestamp);
 }
 
+function compareControlCenterItems(a: ControlCenterItem, b: ControlCenterItem): number {
+  const toneRank = rankControlCenterTone(a.tone) - rankControlCenterTone(b.tone);
+  if (toneRank !== 0) return toneRank;
+  return parseTime(b.updatedAt ?? b.completedAt ?? b.startedAt) - parseTime(a.updatedAt ?? a.completedAt ?? a.startedAt);
+}
+
+function rankControlCenterTone(tone: ControlCenterItem["tone"]): number {
+  if (tone === "error") return 0;
+  if (tone === "warn") return 1;
+  if (tone === "info") return 2;
+  return 3;
+}
+
 function rankTone(tone: AttentionTone): number {
   if (tone === "error") return 0;
   if (tone === "warn") return 1;
@@ -1122,6 +1765,14 @@ function shortSessionKey(key: string): string {
   return key.length > 42 ? `${key.slice(0, 40)}...` : key;
 }
 
+function labelForAgent(agent: AgentSummary | undefined): string | undefined {
+  return agent?.name ?? agent?.id;
+}
+
+function labelForSession(session: SessionSummary | undefined): string | undefined {
+  return session ? session.label ?? shortSessionKey(session.key) : undefined;
+}
+
 function mapBy<T>(items: T[], key: (item: T) => string): Map<string, T> {
   const map = new Map<string, T>();
   for (const item of items) map.set(key(item), item);
@@ -1146,6 +1797,14 @@ function newestTimestamp(values: Array<string | undefined>): string | undefined 
     .filter((item): item is { value: string; ms: number } => Boolean(item.value) && item.ms > 0)
     .sort((a, b) => b.ms - a.ms)[0];
   return newest?.value;
+}
+
+function oldestTimestamp(values: Array<string | undefined>): string | undefined {
+  const oldest = values
+    .map((value) => ({ value, ms: parseTime(value) }))
+    .filter((item): item is { value: string; ms: number } => Boolean(item.value) && item.ms > 0)
+    .sort((a, b) => a.ms - b.ms)[0];
+  return oldest?.value;
 }
 
 function formatAge(iso: string | undefined, nowMs: number): string {

@@ -6,6 +6,7 @@ import { AuthGate } from "./context";
 import { Layout } from "./components/Layout";
 import { CommandCenterPage } from "./pages/CommandCenter";
 import { TimelinePage } from "./pages/Timeline";
+import { WorkBoardPage } from "./pages/WorkBoard";
 import { WorkGraphPage } from "./pages/WorkGraph";
 import { AgentOfficeLayout } from "./pages/agents/AgentOfficeLayout";
 import { AgentOverview } from "./pages/agents/AgentOverview";
@@ -39,6 +40,7 @@ createRoot(document.getElementById("root")!).render(
             <Route element={<Layout />}>
               <Route index element={<CommandCenterPage />} />
               <Route path="timeline" element={<TimelinePage />} />
+              <Route path="work" element={<WorkBoardPage />} />
               <Route path="graph" element={<WorkGraphPage />} />
               <Route path="agents" element={<AgentOfficeLayout />}>
                 <Route index element={<AgentOverview />} />

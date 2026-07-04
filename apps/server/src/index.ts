@@ -88,7 +88,8 @@ function parseFakeGatewayScenario(value: string | undefined): FakeGatewayScenari
     value === "busy" ||
     value === "failed" ||
     value === "approval-heavy" ||
-    value === "degraded"
+    value === "degraded" ||
+    value === "discord-workflow"
   ) {
     return value;
   }

@@ -254,6 +254,15 @@ describe("dashboard selectors", () => {
             endedAt: "2026-06-22T11:40:00.000Z",
             error: "approval prompt expired",
           },
+          {
+            id: "task-complete",
+            status: "completed",
+            title: "Docs update completed",
+            agentId: "main",
+            sessionKey: "agent:main:release",
+            startedAt: "2026-06-22T11:10:00.000Z",
+            endedAt: "2026-06-22T11:52:00.000Z",
+          },
         ],
         approvals: [
           {
@@ -308,6 +317,23 @@ describe("dashboard selectors", () => {
     });
     expect(model.attention.filter((item) => item.kind === "task-failed")).toHaveLength(2);
     expect(model.attention.some((item) => item.kind === "long-running-task" && item.task?.id === "task-release")).toBe(true);
+    expect(model.controlCenter.activeNow.map((item) => item.id)).toEqual(["task:task-release", "task:task-subagent-selectors"]);
+    expect(model.controlCenter.waitingOnMe.map((item) => item.id)).toEqual([
+      "approval:approval-plugin",
+      "approval:approval-terraform",
+      "approval:approval-restart",
+    ]);
+    expect(model.controlCenter.failedRecoverable.map((item) => item.id)).toEqual([
+      "task:task-browser-failed",
+      "task:task-prod-timeout",
+    ]);
+    expect(model.controlCenter.recentlyCompleted[0]).toMatchObject({
+      id: "task:task-complete",
+      lane: "recentlyCompleted",
+      tone: "ok",
+      nextAction: "No action needed; open details if context is useful.",
+    });
+    expect(model.controlCenter.attention.some((item) => item.id === "task-long-running:task-release")).toBe(true);
   });
 
   it("keeps active sessions without tasks visible as work", () => {
@@ -428,6 +454,207 @@ describe("dashboard selectors", () => {
     );
   });
 
+  it("summarizes a Discord-thread workflow fixture with active, waiting, completed, failed, and hidden work", () => {
+    const mainChannel = "agent:dashclaw:discord:channel:1519213500986036264";
+    const workBoardThread = "agent:dashclaw:discord:thread:work-board";
+    const subagentSession = "agent:fixture-model:subagent:TASK-039-fixture-model-lane";
+    const acpSession = "agent:coder:acp:TASK-039-coding-lane";
+    const completedThread = "agent:dashclaw:discord:thread:completed-summary";
+    const failedThread = "agent:dashclaw:discord:thread:failed-delivery";
+    const archivedThread = "agent:dashclaw:discord:thread:archived-context";
+
+    const model = buildDashboardModel(
+      snapshot({
+        agents: [
+          { id: "dashclaw", name: "Dashclaw", model: "gpt-test" },
+          { id: "fixture-model", name: "Fixture Model Lane", model: "gpt-test" },
+          { id: "coder", name: "ACP Coding Lane", model: "gpt-test" },
+          { id: "ops", name: "Ops Watch", model: "gpt-test" },
+        ],
+        sessions: [
+          {
+            key: mainChannel,
+            agentId: "dashclaw",
+            label: "#dashclaw / main discussion",
+            status: "running",
+            isActive: true,
+            currentRunId: "run-channel-main",
+            updatedAt: "2026-06-22T11:59:45.000Z",
+          },
+          {
+            key: workBoardThread,
+            agentId: "dashclaw",
+            label: "thread: implement work board",
+            status: "running",
+            isActive: true,
+            parentSessionKey: mainChannel,
+            currentRunId: "run-thread-work-board",
+            updatedAt: "2026-06-22T11:59:30.000Z",
+          },
+          {
+            key: subagentSession,
+            agentId: "fixture-model",
+            label: "TASK-039 fixture/model lane",
+            status: "running",
+            isActive: true,
+            parentSessionKey: workBoardThread,
+            currentRunId: "run-subagent-fixture",
+            currentTool: "pnpm test",
+            updatedAt: "2026-06-22T11:59:20.000Z",
+          },
+          {
+            key: acpSession,
+            agentId: "coder",
+            label: "ACP lane: fixture extension",
+            status: "queued",
+            isActive: true,
+            parentSessionKey: workBoardThread,
+            currentRunId: "run-acp-fixture",
+            updatedAt: "2026-06-22T11:59:00.000Z",
+          },
+          {
+            key: completedThread,
+            agentId: "dashclaw",
+            label: "thread: completed fixture summary",
+            status: "completed",
+            isActive: false,
+            parentSessionKey: mainChannel,
+            updatedAt: "2026-06-22T11:50:00.000Z",
+          },
+          {
+            key: failedThread,
+            agentId: "dashclaw",
+            label: "thread: investigate failed delivery",
+            status: "failed",
+            isActive: false,
+            parentSessionKey: mainChannel,
+            updatedAt: "2026-06-22T11:53:00.000Z",
+          },
+          {
+            key: archivedThread,
+            agentId: "dashclaw",
+            label: "thread: archived context",
+            status: "completed",
+            isActive: false,
+            parentSessionKey: mainChannel,
+            updatedAt: "2026-06-22T10:00:00.000Z",
+          },
+        ],
+        tasks: [
+          {
+            id: "task-discord-main-triage",
+            status: "running",
+            title: "Coordinate Discord workflow triage",
+            agentId: "dashclaw",
+            sessionKey: mainChannel,
+            runId: "run-channel-main",
+            startedAt: "2026-06-22T11:55:00.000Z",
+          },
+          {
+            id: "task-work-board",
+            status: "running",
+            title: "Implement work board fixture",
+            agentId: "dashclaw",
+            sessionKey: workBoardThread,
+            runId: "run-thread-work-board",
+            startedAt: "2026-06-22T11:20:00.000Z",
+          },
+          {
+            id: "task-fixture-model-lane",
+            status: "running",
+            kind: "subagent",
+            title: "Inspect fake gateway runtime model",
+            agentId: "fixture-model",
+            sessionKey: subagentSession,
+            runId: "run-subagent-fixture",
+            startedAt: "2026-06-22T11:57:00.000Z",
+          },
+          {
+            id: "task-acp-review",
+            status: "queued",
+            kind: "acp",
+            title: "Review fixture extension",
+            agentId: "coder",
+            sessionKey: acpSession,
+            runId: "run-acp-fixture",
+            startedAt: "2026-06-22T11:58:00.000Z",
+          },
+          {
+            id: "task-thread-summary",
+            status: "completed",
+            title: "Publish fixture summary to thread",
+            agentId: "dashclaw",
+            sessionKey: completedThread,
+            runId: "run-thread-summary",
+            startedAt: "2026-06-22T11:40:00.000Z",
+            endedAt: "2026-06-22T11:48:00.000Z",
+          },
+          {
+            id: "task-failed-delivery",
+            status: "failed",
+            title: "Investigate failed delivery",
+            agentId: "dashclaw",
+            sessionKey: failedThread,
+            runId: "run-failed-delivery",
+            endedAt: "2026-06-22T11:54:00.000Z",
+            error: "Discord result delivery failed after thread handoff",
+          },
+          {
+            id: "task-lost-background-result",
+            status: "timed_out",
+            kind: "subagent",
+            title: "Recover orphaned subagent result",
+            agentId: "fixture-model",
+            sessionKey: "agent:fixture-model:subagent:missing-delivery",
+            runId: "run-lost-result",
+            startedAt: "2026-06-22T10:30:00.000Z",
+            endedAt: "2026-06-22T11:30:00.000Z",
+            error: "parent thread unavailable before result delivery",
+          },
+        ],
+        approvals: [
+          {
+            id: "approval-discord-thread-test",
+            kind: "exec",
+            status: "pending",
+            command: "pnpm --filter @dashclaw/web test -- dashboard.test.ts",
+            agentId: "coder",
+            sessionKey: acpSession,
+            requestedAt: "2026-06-22T11:58:30.000Z",
+          },
+        ],
+      }),
+      [],
+      { nowMs: now },
+    );
+
+    expect(model.summary).toMatchObject({
+      totalAgents: 4,
+      workingAgents: 3,
+      activeWork: 4,
+      pendingApprovals: 1,
+      failedTasks: 2,
+    });
+    expect(model.activeWork.filter((item) => item.status === "queued")).toHaveLength(1);
+    expect(model.activeWork.map((item) => item.id)).toEqual([
+      "task:task-discord-main-triage",
+      "task:task-work-board",
+      "task:task-fixture-model-lane",
+      "task:task-acp-review",
+    ]);
+    expect(model.workGraph.summary).toMatchObject({ children: 13, active: 8, failed: 2, lost: 1, hiddenInactive: 5 });
+    expect(model.workGraph.nodes.filter((node) => node.status === "completed")).toHaveLength(2);
+    expect(model.attention.map((item) => item.kind)).toEqual(
+      expect.arrayContaining(["approval", "task-failed", "long-running-task"]),
+    );
+    expect(model.workGraph.edges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ from: `session:${mainChannel}`, to: `session:${workBoardThread}` }),
+        expect.objectContaining({ from: `session:${workBoardThread}`, to: `session:${subagentSession}` }),
+      ]),
+    );
+  });
+
   it("builds a ranked intervention/access/security summary from runtime signals", () => {
     const model = buildDashboardModel(
       snapshot({
@@ -484,6 +711,175 @@ describe("dashboard selectors", () => {
       tone: "error",
       title: "High-risk approval pending",
     });
+  });
+
+  it("derives work board items by Discord thread while preserving partial lineage", () => {
+    const channel = "agent:dashclaw:discord:channel:1519213500986036264";
+    const activeThread = "agent:dashclaw:discord:thread:work-board-active";
+    const activeSubagent = "agent:worker:subagent:work-board-selectors";
+    const waitingThread = "agent:dashclaw:discord:thread:needs-approval";
+    const reviewThread = "agent:dashclaw:discord:thread:needs-review";
+    const doneThread = "agent:dashclaw:discord:thread:done-summary";
+
+    const model = buildDashboardModel(
+      snapshot({
+        agents: [
+          { id: "dashclaw", name: "Dashclaw", model: "gpt-test" },
+          { id: "worker", name: "Selector Worker", model: "gpt-test" },
+        ],
+        sessions: [
+          {
+            key: channel,
+            agentId: "dashclaw",
+            label: "#dashclaw",
+            isActive: false,
+            updatedAt: "2026-06-22T11:30:00.000Z",
+          },
+          {
+            key: activeThread,
+            agentId: "dashclaw",
+            label: "thread: TASK-034 Work Board",
+            isActive: true,
+            parentSessionKey: channel,
+            updatedAt: "2026-06-22T11:59:00.000Z",
+          },
+          {
+            key: activeSubagent,
+            agentId: "worker",
+            label: "TASK-034 selector lane",
+            isActive: true,
+            parentSessionKey: activeThread,
+            currentTool: "pnpm test",
+            updatedAt: "2026-06-22T11:59:20.000Z",
+          },
+          {
+            key: waitingThread,
+            agentId: "dashclaw",
+            label: "thread: deploy approval",
+            isActive: false,
+            parentSessionKey: channel,
+            updatedAt: "2026-06-22T11:58:00.000Z",
+          },
+          {
+            key: reviewThread,
+            agentId: "dashclaw",
+            label: "thread: review release notes",
+            status: "needs_review",
+            isActive: false,
+            parentSessionKey: channel,
+            updatedAt: "2026-06-22T11:54:00.000Z",
+          },
+          {
+            key: doneThread,
+            agentId: "dashclaw",
+            label: "thread: completed docs",
+            status: "completed",
+            isActive: false,
+            parentSessionKey: channel,
+            updatedAt: "2026-06-22T11:45:00.000Z",
+          },
+        ],
+        tasks: [
+          {
+            id: "task-work-board-parent",
+            status: "running",
+            title: "Build work board selectors",
+            agentId: "dashclaw",
+            sessionKey: activeThread,
+            runId: "run-work-board",
+            startedAt: "2026-06-22T11:50:00.000Z",
+          },
+          {
+            id: "task-work-board-subagent",
+            status: "running",
+            kind: "subagent",
+            title: "Audit selector fixture",
+            agentId: "worker",
+            sessionKey: activeSubagent,
+            runId: "run-selector-worker",
+            startedAt: "2026-06-22T11:55:00.000Z",
+          },
+          {
+            id: "task-new-inbox",
+            status: "queued",
+            title: "Queued without a session yet",
+            agentId: "dashclaw",
+          },
+          {
+            id: "task-done-summary",
+            status: "completed",
+            title: "Publish completed summary",
+            agentId: "dashclaw",
+            sessionKey: doneThread,
+            startedAt: "2026-06-22T11:40:00.000Z",
+            endedAt: "2026-06-22T11:44:00.000Z",
+          },
+          {
+            id: "task-orphaned-failure",
+            status: "failed",
+            title: "Recover orphaned Discord result",
+            agentId: "worker",
+            sessionKey: "agent:worker:subagent:missing-result",
+            endedAt: "2026-06-22T11:57:00.000Z",
+            error: "child result arrived after parent thread disappeared",
+          },
+        ],
+        approvals: [
+          {
+            id: "approval-deploy",
+            kind: "exec",
+            status: "pending",
+            command: "pnpm deploy --dry-run",
+            agentId: "dashclaw",
+            sessionKey: waitingThread,
+            requestedAt: "2026-06-22T11:58:30.000Z",
+          },
+        ],
+      }),
+      [
+        {
+          id: "event-worker-progress",
+          kind: "agent.tool",
+          timestamp: "2026-06-22T11:59:30.000Z",
+          title: "Worker ran tests",
+          summary: "Selector worker finished one assertion pass.",
+          sessionKey: activeSubagent,
+          taskId: "task-work-board-subagent",
+        },
+      ],
+      { nowMs: now },
+    );
+
+    expect(model.workBoard.summary).toMatchObject({ inbox: 1, active: 1, waiting: 1, review: 1, done: 1, failed: 1 });
+    expect(model.workBoard.columns.map((column) => column.id)).toEqual(["inbox", "active", "waiting", "review", "done", "failed"]);
+
+    const active = model.workBoard.items.find((item) => item.id === `session:${activeThread}`);
+    expect(active).toMatchObject({
+      title: "TASK-034 Work Board",
+      state: "active",
+      tone: "ok",
+      currentAction: "pnpm test",
+      lineage: { quality: "complete" },
+    });
+    expect(active?.evidence.sessions.map((session) => session.key)).toEqual([activeSubagent, activeThread]);
+    expect(active?.evidence.tasks.map((task) => task.id)).toEqual(["task-work-board-subagent", "task-work-board-parent"]);
+    expect(active?.evidence.events.map((event) => event.id)).toEqual(["event-worker-progress"]);
+
+    expect(model.workBoard.items.find((item) => item.id === `session:${waitingThread}`)).toMatchObject({
+      state: "waiting",
+      summary: "pnpm deploy --dry-run",
+      links: { approval: "/approvals" },
+    });
+    expect(model.workBoard.items.find((item) => item.id === `session:${reviewThread}`)?.state).toBe("review");
+    expect(model.workBoard.items.find((item) => item.id === `session:${doneThread}`)?.state).toBe("done");
+
+    const orphaned = model.workBoard.items.find((item) => item.id === "task:task-orphaned-failure");
+    expect(orphaned).toMatchObject({
+      state: "failed",
+      tone: "error",
+      lineage: { quality: "partial" },
+    });
+    expect(orphaned?.lineage.diagnostic).toContain("missing session");
   });
 
   it("builds task details from task, session, agent, and related events", () => {
