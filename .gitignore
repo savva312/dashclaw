@@ -13,3 +13,7 @@ docs/
 .serena/
 apps/web/dist/
 apps/server/data/
+
+# Playwright artifacts
+playwright-report/
+test-results/
