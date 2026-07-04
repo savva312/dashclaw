@@ -29,11 +29,13 @@ test.describe("Discord workflow browser smoke", () => {
     await expect(page.getByRole("link", { name: "Open work board" }).first()).toBeVisible();
   });
 
-  test("renders the approval queue without bypassing confirmation UI", async ({ page }) => {
+  test("renders the approval cockpit without enabling unsafe decisions", async ({ page }) => {
     await page.goto("/approvals");
 
-    await expect(page.getByRole("heading", { name: "Approvals" })).toBeVisible();
-    await expect(page.getByText("Approve").first()).toBeVisible();
-    await expect(page.getByText("Deny").first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Approval Cockpit" })).toBeVisible();
+    await expect(page.getByText("Read-only exec/plugin approval evidence")).toBeVisible();
+    await expect(page.getByText("Exact command text").first()).toBeVisible();
+    await expect(page.getByText("Approve once unavailable").first()).toBeVisible();
+    await expect(page.getByText("disabled in read-only cockpit until backend action metadata").first()).toBeVisible();
   });
 });

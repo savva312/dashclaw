@@ -1486,6 +1486,200 @@ describe("dashboard selectors", () => {
     expect(model.deliveryRecoveryQueue.summary).toMatchObject({ total: 2, failedDelivery: 1, silentTerminal: 1 });
   });
 
+  it("models the exec approval cockpit as read-only evidence across pending, expired, consumed, sync, and full-mode states", () => {
+    const exactCommand = "printf 'hello' && echo done | tee /tmp/approval-cockpit\nprintf 'second line'";
+    const model = buildDashboardModel(
+      snapshot({
+        health: {
+          ok: true,
+          raw: {
+            tools: { exec: { mode: "full", askFallback: "ask" } },
+            hostApproval: { approvalRequired: true },
+          },
+        },
+        sessions: [
+          {
+            key: "session-allow-once",
+            agentId: "agent-a",
+            label: "Allow-once approval",
+            currentRunId: "run-allow-once",
+            updatedAt: "2026-06-22T11:58:00.000Z",
+          },
+          {
+            key: "session-expired",
+            agentId: "agent-b",
+            label: "Expired approval",
+            currentRunId: "run-expired",
+            updatedAt: "2026-06-22T11:45:00.000Z",
+          },
+          {
+            key: "session-consumed",
+            agentId: "agent-a",
+            label: "Consumed approval",
+            updatedAt: "2026-06-22T11:50:00.000Z",
+          },
+        ],
+        tasks: [
+          {
+            id: "task-allow-once",
+            status: "queued",
+            title: "Waiting for approval",
+            agentId: "agent-a",
+            sessionKey: "session-allow-once",
+            runId: "run-allow-once",
+            startedAt: "2026-06-22T11:57:00.000Z",
+          },
+          {
+            id: "task-expired",
+            status: "timed_out",
+            title: "Approval timed out",
+            agentId: "agent-b",
+            sessionKey: "session-expired",
+            runId: "run-expired",
+            startedAt: "2026-06-22T11:30:00.000Z",
+            endedAt: "2026-06-22T11:45:00.000Z",
+            error: "approval prompt expired",
+          },
+          {
+            id: "task-consumed",
+            status: "completed",
+            title: "Approval consumed",
+            agentId: "agent-a",
+            sessionKey: "session-consumed",
+            endedAt: "2026-06-22T11:51:00.000Z",
+          },
+        ],
+        approvals: [
+          {
+            id: "approval-allow-once",
+            kind: "exec",
+            status: "pending",
+            command: exactCommand,
+            agentId: "agent-a",
+            sessionKey: "session-allow-once",
+            requestedAt: "2026-06-22T11:58:30.000Z",
+            host: "local-dev",
+            cwd: "/workspace/dashclaw",
+            scope: "allow-once",
+            timeoutMs: 300_000,
+            expiresAt: "2026-06-22T12:03:30.000Z",
+          },
+          {
+            id: "approval-expired",
+            kind: "exec",
+            status: "pending",
+            command: "terraform plan && terraform apply",
+            agentId: "agent-b",
+            sessionKey: "session-expired",
+            requestedAt: "2026-06-22T11:30:00.000Z",
+            expiresAt: "2026-06-22T11:35:00.000Z",
+            host: "ops-runner",
+            cwd: "/infra/prod",
+          },
+          {
+            id: "approval-consumed",
+            kind: "exec",
+            status: "approved",
+            command: "pnpm test -- dashboard.test.ts",
+            agentId: "agent-a",
+            sessionKey: "session-consumed",
+            requestedAt: "2026-06-22T11:49:00.000Z",
+            resolvedAt: "2026-06-22T11:50:00.000Z",
+            consumedAt: "2026-06-22T11:51:00.000Z",
+            scope: "allow-once",
+            host: "local-dev",
+            cwd: "/workspace/dashclaw",
+          },
+          {
+            id: "approval-denied",
+            kind: "exec",
+            status: "denied",
+            command: "sudo systemctl restart gateway",
+            agentId: "agent-b",
+            sessionKey: "session-expired",
+            requestedAt: "2026-06-22T11:40:00.000Z",
+            resolvedAt: "2026-06-22T11:41:00.000Z",
+            failureReason: "operator denied privileged restart",
+            host: "ops-runner",
+            cwd: "/workspace/dashclaw",
+          },
+        ],
+      }),
+      [
+        {
+          id: "event-unknown-approval",
+          kind: "approval.resolved",
+          timestamp: "2026-06-22T11:59:00.000Z",
+          title: "Approval resolve failed",
+          summary: "approval id approval-rotated not found",
+          payload: { approvalId: "approval-rotated", error: "unknown approval id" },
+        },
+        {
+          id: "event-sync-approval",
+          kind: "approval.resolved",
+          timestamp: "2026-06-22T11:59:10.000Z",
+          title: "Control UI approval was not consumed",
+          summary: "approval approval-consumed resolved but shell runner still blocked",
+          payload: { approvalId: "approval-consumed", error: "approval not consumed by host runner" },
+        },
+      ],
+      { nowMs: now },
+    );
+
+    expect(model.approvalCockpit.summary).toMatchObject({
+      pending: 1,
+      expired: 1,
+      consumed: 1,
+      resolved: 1,
+      "unknown-id": 1,
+      "sync-issue": 1,
+      "full-mode-warning": 1,
+    });
+
+    const pending = model.approvalCockpit.items.find((item) => item.id === "approval:approval-allow-once");
+    expect(pending).toMatchObject({
+      status: "pending",
+      title: "Allow-once approval pending",
+      command: exactCommand,
+      host: "local-dev",
+      cwd: "/workspace/dashclaw",
+      origin: { taskId: "task-allow-once", runId: "run-allow-once" },
+      decisionScope: "allow-once",
+      timeout: "300s",
+    });
+    expect(pending?.commandRiskSignals).toEqual(expect.arrayContaining(["multiline shell text", "chained shell operators", "pipe operator"]));
+    expect(pending?.policyLayers.join(" ")).toContain("Tool policy");
+    expect(pending?.policyLayers.join(" ")).toContain("Host approval policy");
+    expect(pending?.policyLayers.join(" ")).toContain("Ask fallback");
+    expect(pending?.disabledActions.every((action) => action.disabledReason.includes("disabled"))).toBe(true);
+
+    expect(model.approvalCockpit.items.find((item) => item.id === "approval:approval-expired")).toMatchObject({
+      status: "expired",
+      tone: "warn",
+      syncHints: expect.arrayContaining([expect.stringContaining("deadline has passed")]),
+    });
+    expect(model.approvalCockpit.items.find((item) => item.id === "approval:approval-consumed")).toMatchObject({
+      status: "consumed",
+      consumedAt: "2026-06-22T11:51:00.000Z",
+    });
+    expect(model.approvalCockpit.items.find((item) => item.id === "approval:approval-denied")).toMatchObject({
+      status: "resolved",
+      failureReason: "operator denied privileged restart",
+      commandRiskSignals: expect.arrayContaining(["privileged or network-capable command"]),
+    });
+    expect(model.approvalCockpit.items.find((item) => item.status === "unknown-id")).toMatchObject({
+      failureReason: "unknown approval id",
+      syncHints: expect.arrayContaining([expect.stringContaining("out of sync")]),
+    });
+    expect(model.approvalCockpit.items.find((item) => item.status === "sync-issue")).toMatchObject({
+      failureReason: "approval not consumed by host runner",
+    });
+    expect(model.approvalCockpit.items.find((item) => item.status === "full-mode-warning")?.syncHints[0]).toContain("Full mode");
+    expect(model.approvalCockpit.metadataGaps).toEqual(expect.arrayContaining([
+      expect.stringContaining("approve/deny/allowlist mutation disabled"),
+    ]));
+  });
+
   it("adds disabled work-item actions with concrete missing-metadata reasons", () => {
     const model = buildDashboardModel(
       snapshot({

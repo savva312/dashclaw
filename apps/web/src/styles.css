@@ -1882,10 +1882,130 @@ textarea {
   border-color: var(--border);
 }
 
+.approvals-page {
+  display: grid;
+  gap: 1rem;
+}
+
+.approvals-header,
+.approval-cockpit-head,
+.approval-cockpit-summary {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.approvals-header,
+.approval-cockpit-head {
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.approval-cockpit-summary {
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.approval-cockpit-list {
+  display: grid;
+  gap: 0.85rem;
+  margin-top: 1rem;
+}
+
+.approval-cockpit-list-full {
+  margin-top: 0;
+}
+
+.approval-cockpit-item {
+  background: color-mix(in srgb, var(--bg-elevated) 70%, transparent);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 12px;
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.85rem;
+}
+
+.approval-cockpit-item-ok {
+  border-left-color: var(--success);
+}
+
+.approval-cockpit-item-warn {
+  border-left-color: var(--warn);
+}
+
+.approval-cockpit-item-error {
+  border-left-color: var(--error);
+}
+
+.approval-command {
+  background: color-mix(in srgb, var(--bg) 76%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-family: var(--font-data);
+  font-size: 0.82rem;
+  margin: 0.35rem 0 0;
+  overflow-x: auto;
+  padding: 0.65rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.approval-cockpit-details {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  margin: 0;
+}
+
+.approval-cockpit-details-full {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.approval-cockpit-details div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.approval-cockpit-details dt {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.approval-cockpit-details dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.approval-risk,
+.approval-section p {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.approval-section ul,
+.approval-metadata-gaps ul {
+  color: var(--text-muted);
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.approval-section li,
+.approval-metadata-gaps li {
+  margin: 0.25rem 0;
+}
+
 @media (max-width: 760px) {
   .work-board-header,
   .work-board-toolbar,
-  .work-board-review-head {
+  .work-board-review-head,
+  .approvals-header {
     align-items: stretch;
     flex-direction: column;
   }

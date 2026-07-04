@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { useAppState } from "../context";
 import {
   buildDashboardModel,
+  type ApprovalCockpitItem,
   type AttentionTone,
   type ControlCenterItem,
   type ControlCenterLane,
@@ -56,6 +57,8 @@ export function CommandCenterPage() {
       <ControlCenterOverviewCard model={model.controlCenter} />
 
       <InterventionCard model={model.interventionSummary} />
+
+      <ApprovalCockpitCard model={model.approvalCockpit} />
 
       <div className="grid grid-4" style={{ marginBottom: "1.5rem" }}>
         <div className="card">
@@ -138,6 +141,64 @@ export function CommandCenterPage() {
         </div>
       </div>
     </>
+  );
+}
+
+function ApprovalCockpitCard({ model }: { model: ReturnType<typeof buildDashboardModel>["approvalCockpit"] }) {
+  const visible = model.items.slice(0, 6);
+  return (
+    <div className="card approval-cockpit" style={{ marginBottom: "1.5rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "flex-start" }}>
+        <div>
+          <h3>Exec Approval Cockpit</h3>
+          <p className="stat-label" style={{ marginTop: "0.35rem" }}>
+            Read-only queue/history for command approvals, sync confusion, and missing policy metadata. <Link to="/approvals">Open full cockpit</Link>
+          </p>
+        </div>
+        <div className="approval-cockpit-summary" aria-label="Approval cockpit summary">
+          <span className="badge warn">{model.summary.pending} pending</span>
+          <span className="badge error">{model.summary["sync-issue"] + model.summary.expired} confused/expired</span>
+          <span className="badge neutral">{model.summary.resolved} resolved</span>
+        </div>
+      </div>
+      {visible.length === 0 ? (
+        <p className="empty">No approvals or approval timeline evidence reported.</p>
+      ) : (
+        <div className="approval-cockpit-list">
+          {visible.map((item) => <ApprovalCockpitMiniCard key={item.id} item={item} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ApprovalCockpitMiniCard({ item }: { item: ApprovalCockpitItem }) {
+  return (
+    <article className={`approval-cockpit-item approval-cockpit-item-${badgeClassForTone(item.tone)}`}>
+      <div className="approval-cockpit-head">
+        <div>
+          <strong>{item.kind === "exec" ? "Exec approval" : item.kind === "plugin" ? "Plugin approval" : "Approval evidence"}</strong>
+          <div className="stat-label mono">{item.id}</div>
+        </div>
+        <span className={`badge ${badgeClassForTone(item.tone)}`}>{item.statusLabel}</span>
+      </div>
+      <pre className="approval-command">{item.command}</pre>
+      <dl className="approval-cockpit-details">
+        <div><dt>cwd</dt><dd className="mono">{item.cwd ?? "not reported"}</dd></div>
+        <div><dt>host</dt><dd className="mono">{item.host ?? "not reported"}</dd></div>
+        <div><dt>origin</dt><dd className="mono">{[item.origin.agentId && `agent:${item.origin.agentId}`, item.origin.sessionKey && `session:${item.origin.sessionKey}`, item.origin.taskId && `task:${item.origin.taskId}`].filter(Boolean).join(" · ") || "not linked"}</dd></div>
+        <div><dt>timeout/status</dt><dd>{item.timeout ?? "timeout not reported"}</dd></div>
+      </dl>
+      <p className="approval-risk">{item.riskSummary}</p>
+      <div className="operator-action-chips" aria-label="Approval evidence links and disabled decisions">
+        {item.evidence.map((evidence) => evidence.href ? <Link key={`${evidence.label}:${evidence.href}`} className="operator-action-chip" to={evidence.href}>{evidence.label}</Link> : null)}
+        {item.disabledActions.map((action) => (
+          <span key={action.label} className="operator-action-chip operator-action-chip-disabled" title={action.disabledReason}>
+            {action.label} unavailable: {action.disabledReason}
+          </span>
+        ))}
+      </div>
+    </article>
   );
 }
 

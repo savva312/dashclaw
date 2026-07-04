@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 
-export const FAKE_GATEWAY_SCENARIOS = ["idle", "busy", "failed", "approval-heavy", "degraded", "discord-workflow"] as const;
+export const FAKE_GATEWAY_SCENARIOS = ["idle", "busy", "failed", "approval-heavy", "approval-cockpit", "degraded", "discord-workflow"] as const;
 export type FakeGatewayScenario = (typeof FAKE_GATEWAY_SCENARIOS)[number];
 
 export interface FakeGatewayOptions {
@@ -243,6 +243,65 @@ function buildScenarioData(scenario: FakeGatewayScenario): FakeGatewayScenarioDa
         ],
         logs: ["[warn] 3 approvals pending", "[info] release orchestration waiting for operator"],
       };
+    case "approval-cockpit":
+      return {
+        ...common,
+        health: {
+          ok: true,
+          uptimeMs: 12345,
+          version: "fake-2026.6.0",
+          raw: {
+            tools: { exec: { mode: "full", askFallback: "ask" } },
+            hostApproval: { source: "host-local", approvalRequired: true },
+          },
+        },
+        sessions: [
+          session("agent:main:approval-cockpit", "main", "Approval cockpit", "running", -90_000, "run-approval-cockpit", "exec"),
+          session("agent:ops:expired-approval", "ops", "Expired approval", "running", -10 * 60_000, "run-expired-approval", "exec"),
+          session("agent:qa:consumed-approval", "qa", "Consumed approval", "completed", -4 * 60_000, "run-consumed-approval"),
+        ],
+        tasks: [
+          task("task-approval-cockpit", "queued", "Waiting on allow-once exec approval", "main", "agent:main:approval-cockpit", "run-approval-cockpit", -2 * 60_000),
+          task("task-expired-approval", "timed_out", "Approval expired before command ran", "ops", "agent:ops:expired-approval", "run-expired-approval", -20 * 60_000, -10 * 60_000, "approval prompt expired"),
+          task("task-consumed-approval", "completed", "Approval consumed by shell", "qa", "agent:qa:consumed-approval", "run-consumed-approval", -8 * 60_000, -4 * 60_000),
+        ],
+        approvals: [
+          approval("approval-allow-once", "exec", "printf 'hello' && echo done | tee /tmp/approval-cockpit\nprintf 'second line'", "main", "agent:main:approval-cockpit", -90_000, {
+            host: "local-dev",
+            cwd: "/workspace/dashclaw",
+            scope: "allow-once",
+            timeoutMs: 300000,
+            expiresAt: iso(210_000),
+          }),
+          approval("approval-expired", "exec", "terraform plan && terraform apply", "ops", "agent:ops:expired-approval", -20 * 60_000, {
+            host: "ops-runner",
+            cwd: "/infra/prod",
+            scope: "allow-once",
+            expiresAt: iso(-15 * 60_000),
+          }),
+          approval("approval-consumed", "exec", "pnpm test -- dashboard.test.ts", "qa", "agent:qa:consumed-approval", -8 * 60_000, {
+            status: "approved",
+            resolvedAt: iso(-5 * 60_000),
+            consumedAt: iso(-4 * 60_000),
+            decision: "approved",
+            scope: "allow-once",
+            host: "local-dev",
+            cwd: "/workspace/dashclaw",
+          }),
+          approval("approval-denied", "exec", "sudo systemctl restart gateway", "ops", "agent:ops:expired-approval", -12 * 60_000, {
+            status: "denied",
+            resolvedAt: iso(-11 * 60_000),
+            failureReason: "operator denied privileged restart",
+            host: "ops-runner",
+            cwd: "/workspace/dashclaw",
+          }),
+        ],
+        logs: [
+          "[warn] full mode does not disable host-local exec approvals",
+          "[error] approval id approval-rotated-unknown not found; control UI may be stale",
+          "[info] approval-consumed was approved and consumed by shell runner",
+        ],
+      };
     case "degraded":
       return {
         ...common,
@@ -466,6 +525,7 @@ function approval(
   agentId: string,
   sessionKey: string,
   requestedOffsetMs: number,
+  extra: JsonObject = {},
 ): JsonObject {
   return {
     id,
@@ -475,6 +535,7 @@ function approval(
     agentId,
     sessionKey,
     requestedAt: iso(requestedOffsetMs),
+    ...extra,
   };
 }
 

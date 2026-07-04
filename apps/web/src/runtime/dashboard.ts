@@ -428,6 +428,61 @@ export interface RuntimeStatusSummary {
   empty: boolean;
 }
 
+export type ApprovalCockpitStatus =
+  | "pending"
+  | "resolved"
+  | "expired"
+  | "consumed"
+  | "unknown-id"
+  | "sync-issue"
+  | "full-mode-warning"
+  | "unknown";
+
+export interface ApprovalCockpitActionState {
+  label: string;
+  disabledReason: string;
+}
+
+export interface ApprovalCockpitItem {
+  id: string;
+  kind: ApprovalSummary["kind"] | "unknown";
+  status: ApprovalCockpitStatus;
+  title: string;
+  statusLabel: string;
+  tone: AttentionTone | "ok";
+  command: string;
+  cwd?: string;
+  host?: string;
+  decisionScope?: string;
+  expiresAt?: string;
+  resolvedAt?: string;
+  consumedAt?: string;
+  failureReason?: string;
+  commandRiskSignals: string[];
+  origin: {
+    agentId?: string;
+    sessionKey?: string;
+    taskId?: string;
+    runId?: string;
+  };
+  requestedAt?: string;
+  timeout?: string;
+  riskSummary: string;
+  policyLayers: string[];
+  syncHints: string[];
+  metadataGaps: string[];
+  evidence: DeliveryRecoveryEvidence[];
+  disabledActions: ApprovalCockpitActionState[];
+  links: RuntimeLinks;
+  approval?: ApprovalSummary;
+}
+
+export interface ApprovalCockpitModel {
+  items: ApprovalCockpitItem[];
+  summary: Record<ApprovalCockpitStatus, number>;
+  metadataGaps: string[];
+}
+
 export interface DashboardModel {
   generatedAt: string;
   connectionState: RuntimeSnapshot["connectionState"];
@@ -448,6 +503,7 @@ export interface DashboardModel {
   workBoard: WorkBoardModel;
   reviewQueue: ReviewQueueModel;
   deliveryRecoveryQueue: DeliveryRecoveryQueueModel;
+  approvalCockpit: ApprovalCockpitModel;
   threadSessionMap: ThreadSessionMapModel;
   workGraph: WorkGraphModel;
   attention: AttentionItem[];
@@ -512,6 +568,7 @@ export function buildDashboardModel(
     itemLimit: options.reviewQueueLimit,
   });
   const deliveryRecoveryQueue = buildDeliveryRecoveryQueueModel(snapshot, timeline);
+  const approvalCockpit = buildApprovalCockpitModel(snapshot, timeline, { nowMs });
   const threadSessionMap = buildThreadSessionMapModel(snapshot, timeline, {
     nowMs,
     activeSessionStaleAfterMs,
@@ -559,6 +616,7 @@ export function buildDashboardModel(
     workBoard,
     reviewQueue,
     deliveryRecoveryQueue,
+    approvalCockpit,
     threadSessionMap,
     workGraph,
     attention,
@@ -1714,6 +1772,484 @@ function nextActionForAttention(item: AttentionItem): string {
       return "Approve or deny the pending request.";
     case "task-failed":
       return "Open task details, inspect the error, and retry or recover if appropriate.";
+  }
+}
+
+export function buildApprovalCockpitModel(
+  snapshot: RuntimeSnapshot,
+  timeline: TimelineEvent[],
+  options: Pick<DashboardModelOptions, "nowMs"> = {},
+): ApprovalCockpitModel {
+  const nowMs = options.nowMs ?? Date.now();
+  const agentsById = mapBy(snapshot.agents, (agent) => agent.id);
+  const sessionsByKey = mapBy(snapshot.sessions, (session) => session.key);
+  const tasksById = mapBy(snapshot.tasks, (task) => task.id);
+  const approvalsById = mapBy(snapshot.approvals, (approval) => approval.id);
+  const items: ApprovalCockpitItem[] = snapshot.approvals.map((approval) =>
+    approvalCockpitItemFromApproval(approval, snapshot, timeline, {
+      nowMs,
+      agentsById,
+      sessionsByKey,
+    }),
+  );
+
+  for (const event of approvalSyncEvents(timeline, approvalsById, tasksById)) {
+    items.push(approvalCockpitItemFromSyncEvent(event, snapshot, { agentsById, sessionsByKey }));
+  }
+
+  if (hasFullModeCosmeticWarning(snapshot.health?.raw)) {
+    items.push(fullModeApprovalWarningItem(snapshot));
+  }
+
+  items.sort(compareApprovalCockpitItems);
+
+  const summary = emptyApprovalCockpitSummary();
+  for (const item of items) summary[item.status] += 1;
+
+  return {
+    items,
+    summary,
+    metadataGaps: dedupe(items.flatMap((item) => item.metadataGaps)).sort(),
+  };
+}
+
+function approvalCockpitItemFromApproval(
+  approval: ApprovalSummary,
+  snapshot: RuntimeSnapshot,
+  timeline: TimelineEvent[],
+  context: {
+    nowMs: number;
+    agentsById: Map<string, AgentSummary>;
+    sessionsByKey: Map<string, SessionSummary>;
+  },
+): ApprovalCockpitItem {
+  const raw = approval as unknown as Record<string, unknown>;
+  const session = approval.sessionKey ? context.sessionsByKey.get(approval.sessionKey) : undefined;
+  const agentId = approval.agentId ?? session?.agentId;
+  const agent = agentId ? context.agentsById.get(agentId) : undefined;
+  const relatedTasks = tasksForApproval(snapshot.tasks, approval, session);
+  const task = relatedTasks[0];
+  const links = linksFor({ agentId, sessionKey: session?.key ?? approval.sessionKey, taskId: task?.id, approvalId: approval.id });
+  const state = approvalCockpitStatusForApproval(approval, context.nowMs);
+  const risk = riskForCommand(approval.command, approval.kind);
+  const host = pickRawString(raw, "host", "execHost", "hostname");
+  const cwd = pickRawString(raw, "cwd", "workingDirectory", "currentWorkingDirectory");
+  const expiresAt = pickRawString(raw, "expiresAt", "expires_at", "deadlineAt");
+  const timeoutMs = pickRawNumber(raw, "timeoutMs", "timeout_ms", "approvalTimeoutMs");
+  const resolvedAt = pickRawString(raw, "resolvedAt", "resolved_at");
+  const consumedAt = pickRawString(raw, "consumedAt", "consumed_at", "usedAt");
+  const decisionScope = pickRawString(raw, "scope", "decisionScope", "mode") ?? (approval.status === "pending" ? "allow-once" : undefined);
+  const failureReason = pickRawString(raw, "reason", "failure", "failureReason", "error", "resolutionError");
+  const metadataGaps = approvalMetadataGaps({ approval, host, cwd, expiresAt, timeoutMs, state, snapshot });
+  const syncHints = approvalSyncHints(approval, state, relatedApprovalEvents(timeline, approval), failureReason);
+  const statusTitle = titleForApprovalCockpitApproval(approval, state, decisionScope);
+
+  return {
+    id: `approval:${approval.id}`,
+    kind: approval.kind,
+    status: state,
+    title: statusTitle,
+    statusLabel: labelForApprovalCockpitStatus(state),
+    tone: toneForApprovalCockpitStatus(state, risk.level),
+    command: approval.command ?? "[command unavailable]",
+    cwd,
+    host,
+    decisionScope,
+    expiresAt,
+    resolvedAt,
+    consumedAt,
+    failureReason,
+    commandRiskSignals: risk.signals,
+    origin: {
+      agentId,
+      sessionKey: session?.key ?? approval.sessionKey,
+      taskId: task?.id,
+      runId: task?.runId ?? session?.currentRunId,
+    },
+    requestedAt: approval.requestedAt,
+    timeout: timeoutLabel(timeoutMs, approval.requestedAt, expiresAt),
+    riskSummary: risk.summary,
+    policyLayers: approvalPolicyLayers(snapshot, approval, session, agent, { host, decisionScope }),
+    syncHints,
+    metadataGaps,
+    evidence: approvalEvidence(links, approval, session, task, timeline),
+    disabledActions: disabledApprovalCockpitActions(state),
+    links,
+    approval,
+  };
+}
+
+function approvalCockpitItemFromSyncEvent(
+  event: TimelineEvent,
+  snapshot: RuntimeSnapshot,
+  context: { agentsById: Map<string, AgentSummary>; sessionsByKey: Map<string, SessionSummary> },
+): ApprovalCockpitItem {
+  const approvalId = approvalIdFromEvent(event) ?? event.id;
+  const session = event.sessionKey ? context.sessionsByKey.get(event.sessionKey) : undefined;
+  const agentId = event.agentId ?? session?.agentId;
+  const task = event.taskId ? snapshot.tasks.find((candidate) => candidate.id === event.taskId) : undefined;
+  const links = linksFor({ agentId, sessionKey: session?.key ?? event.sessionKey, taskId: task?.id, approvalId });
+  const command = payloadString(event.payload, "command", "cmd", "script") ?? "[command unavailable]";
+  const text = `${event.title} ${event.summary ?? ""} ${payloadString(event.payload, "error", "reason", "failureReason") ?? ""}`;
+  const status: ApprovalCockpitStatus = /unknown|not found|missing|rotat/i.test(text) ? "unknown-id" : "sync-issue";
+  const risk = riskForCommand(command === "[command unavailable]" ? undefined : command, "exec");
+  const failureReason = payloadString(event.payload, "error", "reason", "failureReason") ?? event.summary;
+  const metadataGaps = [
+    "approval event references an id that is not present in the current approval snapshot",
+    "fresh approval action metadata and audit outcome are unavailable",
+  ];
+  if (command === "[command unavailable]") metadataGaps.push("exact command text is unavailable for this sync event");
+  const evidence = ([
+    links.task ? { label: "Task detail", href: links.task, detail: task?.status, source: "task" } : undefined,
+    links.session ? { label: "Session", href: links.session, source: "session" } : undefined,
+    { label: "Timeline", href: links.timeline ?? "/timeline", detail: event.title, source: "timeline" },
+  ] satisfies Array<DeliveryRecoveryEvidence | undefined>).flatMap((item) => (item ? [item] : []));
+
+  return {
+    id: `approval-sync:${approvalId}:${event.id}`,
+    kind: "unknown",
+    status,
+    title: status === "unknown-id" ? "Unknown approval id" : "Approval sync issue",
+    statusLabel: labelForApprovalCockpitStatus(status),
+    tone: "error",
+    command,
+    commandRiskSignals: risk.signals,
+    origin: { agentId, sessionKey: session?.key ?? event.sessionKey, taskId: task?.id, runId: event.runId ?? task?.runId },
+    requestedAt: event.timestamp,
+    failureReason,
+    timeout: undefined,
+    riskSummary: risk.summary,
+    policyLayers: approvalPolicyLayers(snapshot, undefined, session, agentId ? context.agentsById.get(agentId) : undefined, {}),
+    syncHints: ["Approval id is out of sync with the current snapshot; refresh before treating this as an agent/tool failure."],
+    metadataGaps,
+    evidence,
+    disabledActions: disabledApprovalCockpitActions(status),
+    links,
+  };
+}
+
+function fullModeApprovalWarningItem(snapshot: RuntimeSnapshot): ApprovalCockpitItem {
+  const metadataGaps = [
+    "full-mode/tool-policy metadata is reported only as gateway health text, not as normalized approval policy layers",
+    "host-local approval file state and exact ask fallback are not exposed in RuntimeSnapshot",
+  ];
+  return {
+    id: "approval-warning:full-mode",
+    kind: "exec",
+    status: "full-mode-warning",
+    title: "Full mode does not bypass host exec approvals",
+    statusLabel: labelForApprovalCockpitStatus("full-mode-warning"),
+    tone: "info",
+    command: "[not a command request]",
+    commandRiskSignals: [],
+    origin: {},
+    requestedAt: snapshot.updatedAt,
+    riskSummary: "No command is pending; this warning explains why full/auto tool mode can still show exec approvals.",
+    policyLayers: approvalPolicyLayers(snapshot, undefined, undefined, undefined, {}),
+    syncHints: ["Full mode is a tool-policy posture; host-local exec approval prompts can still appear and must be handled separately."],
+    metadataGaps,
+    evidence: [{ label: "Gateway health", href: "/timeline", detail: "full-mode/tool-policy warning", source: "metadata" }],
+    disabledActions: disabledApprovalCockpitActions("full-mode-warning"),
+    links: { timeline: "/timeline" },
+  };
+}
+
+function approvalCockpitStatusForApproval(approval: ApprovalSummary, nowMs: number): ApprovalCockpitStatus {
+  const raw = approval as unknown as Record<string, unknown>;
+  const status = typeof raw.status === "string" ? raw.status : approval.status;
+  const expiresAt = pickRawString(raw, "expiresAt", "expires_at", "deadlineAt");
+  const consumedAt = pickRawString(raw, "consumedAt", "consumed_at", "usedAt");
+  if (status === "consumed" || consumedAt) return "consumed";
+  if (status === "expired" || (status === "pending" && isBefore(expiresAt, nowMs))) return "expired";
+  if (status === "approved" || status === "denied") return "resolved";
+  if (status === "pending") return "pending";
+  return "unknown";
+}
+
+function approvalSyncEvents(
+  timeline: TimelineEvent[],
+  approvalsById: Map<string, ApprovalSummary>,
+  tasksById: Map<string, TaskSummary>,
+): TimelineEvent[] {
+  return timeline.filter((event) => {
+    const approvalId = approvalIdFromEvent(event);
+    const text = `${event.kind} ${event.title} ${event.summary ?? ""} ${payloadString(event.payload, "error", "reason", "failureReason") ?? ""}`;
+    const approvalRelated = /approval/i.test(text) || event.kind === "approval.requested" || event.kind === "approval.resolved";
+    if (!approvalRelated) return false;
+    if (approvalId && !approvalsById.has(approvalId)) return /unknown|not found|missing|rotat|stale|expired|not consumed|sync/i.test(text);
+    if (approvalId && approvalsById.has(approvalId)) return /not consumed|sync|stale approval|control ui/i.test(text);
+    if (event.taskId && tasksById.has(event.taskId)) return /approval.*(unknown|not found|not consumed|sync|expired)/i.test(text);
+    return false;
+  });
+}
+
+function relatedApprovalEvents(timeline: TimelineEvent[], approval: ApprovalSummary): TimelineEvent[] {
+  return timeline.filter((event) => approvalIdFromEvent(event) === approval.id || (approval.sessionKey && event.sessionKey === approval.sessionKey && /approval/i.test(`${event.title} ${event.summary ?? ""}`)));
+}
+
+function approvalIdFromEvent(event: TimelineEvent): string | undefined {
+  return payloadString(event.payload, "approvalId", "approvalID", "id") ?? (event.id.startsWith("approval:") ? event.id.slice("approval:".length) : undefined);
+}
+
+function tasksForApproval(tasks: TaskSummary[], approval: ApprovalSummary, session: SessionSummary | undefined): TaskSummary[] {
+  return tasks
+    .filter((task) => {
+      if (approval.sessionKey && task.sessionKey === approval.sessionKey) return true;
+      if (session?.currentRunId && task.runId === session.currentRunId) return true;
+      if (approval.agentId && task.agentId === approval.agentId && (task.status === "running" || task.status === "queued")) return true;
+      return false;
+    })
+    .sort(compareTasksByActivityDesc);
+}
+
+function riskForCommand(command: string | undefined, kind: ApprovalSummary["kind"]): { level: OperatorActionRisk; summary: string; signals: string[] } {
+  const signals: string[] = [];
+  const text = command ?? "";
+  if (kind === "plugin") signals.push("plugin approval can execute non-exec side effects");
+  if (/\n/.test(text)) signals.push("multiline shell text");
+  if (/(&&|\|\||;)/.test(text)) signals.push("chained shell operators");
+  if (/\|/.test(text)) signals.push("pipe operator");
+  if (/\b(sudo|su|chmod|chown|iptables|ufw|systemctl|service|mount|umount|mkfs|dd|curl|wget|nc|netcat)\b/i.test(text)) signals.push("privileged or network-capable command");
+  if (/\brm\s+(-[^\s]*[rf]|[^\s]*\*)/i.test(text)) signals.push("destructive remove pattern");
+  if (/\|\s*(sh|bash)\b/i.test(text)) signals.push("piped shell interpreter");
+  if (/>\s*\/(etc|usr|bin|sbin|boot|var)\b/i.test(text)) signals.push("redirects into system path");
+  if (!command) signals.push("exact command text missing");
+  const level: OperatorActionRisk = signals.some((signal) => /destructive|privileged|piped shell|system path|plugin/.test(signal)) ? "high" : signals.length > 0 ? "medium" : "none";
+  return {
+    level,
+    signals,
+    summary: signals.length > 0 ? signals.join("; ") : "No high-risk shell patterns detected by the frontend selector.",
+  };
+}
+
+function approvalPolicyLayers(
+  snapshot: RuntimeSnapshot,
+  approval: ApprovalSummary | undefined,
+  session: SessionSummary | undefined,
+  agent: AgentSummary | undefined,
+  input: { host?: string; decisionScope?: string },
+): string[] {
+  const raw = snapshot.health?.raw;
+  const toolPolicy = recursiveRawString(raw, "tools.exec", "toolsExec", "execPolicy", "toolPolicy", "execMode", "mode");
+  const askFallback = recursiveRawString(raw, "ask", "askFallback", "approvalAsk", "execAsk") ?? pickRawString((approval as unknown as Record<string, unknown> | undefined) ?? {}, "ask", "askFallback");
+  return [
+    toolPolicy
+      ? `Tool policy: ${toolPolicy}.`
+      : "Tool policy: not normalized in RuntimeSnapshot; infer only from approval presence and gateway health.",
+    input.host
+      ? `Host approval policy: host-local approval is associated with ${input.host}.`
+      : "Host approval policy: host/cwd approval file state is not exposed by the runtime snapshot.",
+    askFallback
+      ? `Ask fallback: ${askFallback}.`
+      : "Ask fallback: not exposed; cannot prove whether ask came from tools.exec, host policy, or fallback.",
+    session
+      ? `Session override: linked to ${shortSessionKey(session.key)}${session.currentRunId ? ` / ${session.currentRunId}` : ""}; no normalized per-session approval override is exposed.`
+      : "Session override: no linked session metadata, so per-session override state is unknown.",
+    agent
+      ? `Agent override: linked to ${agent.name ?? agent.id}; no normalized per-agent approval override is exposed.`
+      : "Agent override: no linked agent metadata, so per-agent approval override state is unknown.",
+    input.decisionScope ? `Decision scope: ${input.decisionScope}.` : "Decision scope: not exposed; do not assume durable allowlist semantics.",
+  ];
+}
+
+function approvalMetadataGaps(input: {
+  approval: ApprovalSummary;
+  host?: string;
+  cwd?: string;
+  expiresAt?: string;
+  timeoutMs?: number;
+  state: ApprovalCockpitStatus;
+  snapshot: RuntimeSnapshot;
+}): string[] {
+  const gaps: string[] = ["approve/deny/allowlist mutation disabled until backend exposes explicit action metadata, confirmation copy, freshness, destination, and audit outcome semantics"];
+  if (!input.approval.command) gaps.push("exact command text missing from approval snapshot");
+  if (!input.host) gaps.push("host metadata missing from approval snapshot");
+  if (!input.cwd) gaps.push("cwd metadata missing from approval snapshot");
+  if (!input.expiresAt && input.timeoutMs === undefined && input.state === "pending") gaps.push("timeout/deadline metadata missing for pending approval");
+  if (!input.approval.sessionKey) gaps.push("session origin missing from approval snapshot");
+  if (!input.approval.agentId) gaps.push("agent origin missing from approval snapshot");
+  if (!input.snapshot.health?.raw) gaps.push("gateway health does not expose policy-layer metadata");
+  return gaps;
+}
+
+function approvalSyncHints(
+  approval: ApprovalSummary,
+  state: ApprovalCockpitStatus,
+  events: TimelineEvent[],
+  failureReason: string | undefined,
+): string[] {
+  const hints: string[] = [];
+  if (state === "expired") hints.push("This approval deadline has passed; a visible pending prompt may be stale and should be re-requested by the agent.");
+  if (state === "consumed") hints.push("Approval was resolved and consumed; if the command still appears blocked, the control UI and host-local approval state may be out of sync.");
+  if (state === "resolved") hints.push("Approval has a terminal decision; no read-only cockpit action will replay it.");
+  if (failureReason) hints.push(`Failure/reason: ${failureReason}`);
+  if (events.some((event) => /not consumed|sync|stale|unknown|not found/i.test(`${event.title} ${event.summary ?? ""}`))) {
+    hints.push("Timeline contains an approval sync warning for this id.");
+  }
+  if (approval.status === "pending") hints.push("Use the exact command text below; chained operators, pipes, and multiline shell content are not hidden.");
+  return hints;
+}
+
+function approvalEvidence(
+  links: RuntimeLinks,
+  approval: ApprovalSummary,
+  session: SessionSummary | undefined,
+  task: TaskSummary | undefined,
+  timeline: TimelineEvent[],
+): DeliveryRecoveryEvidence[] {
+  const newestEvent = relatedApprovalEvents(timeline, approval).sort(compareEventsDesc)[0];
+  const evidence = ([
+    { label: "Approval queue", href: links.approval ?? "/approvals", detail: approval.id, source: "metadata" },
+    links.task ? { label: "Task detail", href: links.task, detail: task?.status, source: "task" } : undefined,
+    links.session ? { label: "Session", href: links.session, detail: session?.status, source: "session" } : undefined,
+    { label: "Timeline", href: links.timeline ?? "/timeline", detail: newestEvent?.title ?? "Filter by approval/session/task", source: "timeline" },
+  ] satisfies Array<DeliveryRecoveryEvidence | undefined>).flatMap((item) => (item ? [item] : []));
+  return evidence;
+}
+
+function disabledApprovalCockpitActions(status: ApprovalCockpitStatus): ApprovalCockpitActionState[] {
+  const baseReason = "disabled in read-only cockpit until backend action metadata, confirmation semantics, freshness, destination, and audit outcome are explicit";
+  if (status === "pending" || status === "expired") {
+    return [
+      { label: "Approve once", disabledReason: baseReason },
+      { label: "Deny", disabledReason: baseReason },
+      { label: "Add durable allowlist", disabledReason: "disabled because durable scope/host/cwd matching semantics are not normalized" },
+    ];
+  }
+  return [{ label: "Replay or mutate approval", disabledReason: "disabled because this cockpit is read-only and resolved/sync-warning items are evidence only" }];
+}
+
+function labelForApprovalCockpitStatus(status: ApprovalCockpitStatus): string {
+  switch (status) {
+    case "pending":
+      return "Pending";
+    case "resolved":
+      return "Resolved";
+    case "expired":
+      return "Expired";
+    case "consumed":
+      return "Consumed";
+    case "unknown-id":
+      return "Unknown approval id";
+    case "sync-issue":
+      return "Sync issue";
+    case "full-mode-warning":
+      return "Full-mode warning";
+    case "unknown":
+      return "Unknown";
+  }
+}
+
+function titleForApprovalCockpitApproval(
+  approval: ApprovalSummary,
+  state: ApprovalCockpitStatus,
+  decisionScope: string | undefined,
+): string {
+  if (state === "pending" && /once|allow-once/i.test(decisionScope ?? "")) return "Allow-once approval pending";
+  if (state === "pending") return approval.kind === "exec" ? "Execution approval pending" : "Plugin approval pending";
+  if (state === "expired") return "Approval expired";
+  if (state === "consumed") return "Approval consumed";
+  if (state === "resolved") return `Approval ${approval.status}`;
+  return "Approval state unknown";
+}
+
+function toneForApprovalCockpitStatus(status: ApprovalCockpitStatus, risk: OperatorActionRisk): AttentionTone | "ok" {
+  if (status === "unknown-id" || status === "sync-issue") return "error";
+  if (status === "expired") return "warn";
+  if (status === "pending") return risk === "high" ? "error" : "warn";
+  if (status === "full-mode-warning") return "info";
+  return "ok";
+}
+
+function timeoutLabel(timeoutMs: number | undefined, requestedAt: string | undefined, expiresAt: string | undefined): string | undefined {
+  if (timeoutMs !== undefined) return `${Math.round(timeoutMs / 1000)}s`;
+  if (requestedAt && expiresAt) {
+    const durationMs = parseTime(expiresAt) - parseTime(requestedAt);
+    if (Number.isFinite(durationMs) && durationMs > 0) return `${Math.round(durationMs / 1000)}s`;
+  }
+  return undefined;
+}
+
+function isBefore(timestamp: string | undefined, nowMs: number): boolean {
+  if (!timestamp) return false;
+  const parsed = parseTime(timestamp);
+  return Number.isFinite(parsed) && parsed < nowMs;
+}
+
+function pickRawNumber(raw: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = raw[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function recursiveRawString(raw: unknown, ...keys: string[]): string | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const targets = new Set(keys.map((key) => key.toLowerCase()));
+  const stack: Array<{ value: unknown; path: string }> = [{ value: raw, path: "" }];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current || !current.value || typeof current.value !== "object") continue;
+    for (const [key, value] of Object.entries(current.value as Record<string, unknown>)) {
+      const path = current.path ? `${current.path}.${key}` : key;
+      if ((targets.has(key.toLowerCase()) || targets.has(path.toLowerCase())) && (typeof value === "string" || typeof value === "boolean" || typeof value === "number")) {
+        return String(value);
+      }
+      if (value && typeof value === "object") stack.push({ value, path });
+    }
+  }
+  return undefined;
+}
+
+function hasFullModeCosmeticWarning(raw: Record<string, unknown> | undefined): boolean {
+  if (!raw) return false;
+  return walkPosture(raw, (key, candidate) => {
+    const normalized = key.toLowerCase();
+    if (!/(mode|policy|approval|exec|tool)/.test(normalized)) return false;
+    return candidate === "full" || candidate === "full-mode" || candidate === "auto" || candidate === "never";
+  });
+}
+
+function emptyApprovalCockpitSummary(): Record<ApprovalCockpitStatus, number> {
+  return {
+    pending: 0,
+    resolved: 0,
+    expired: 0,
+    consumed: 0,
+    "unknown-id": 0,
+    "sync-issue": 0,
+    "full-mode-warning": 0,
+    unknown: 0,
+  };
+}
+
+function compareApprovalCockpitItems(a: ApprovalCockpitItem, b: ApprovalCockpitItem): number {
+  const statusRank = rankApprovalCockpitStatus(a.status) - rankApprovalCockpitStatus(b.status);
+  if (statusRank !== 0) return statusRank;
+  const riskRank = rankControlCenterTone(a.tone) - rankControlCenterTone(b.tone);
+  if (riskRank !== 0) return riskRank;
+  return parseTime(b.requestedAt ?? b.resolvedAt ?? b.consumedAt) - parseTime(a.requestedAt ?? a.resolvedAt ?? a.consumedAt);
+}
+
+function rankApprovalCockpitStatus(status: ApprovalCockpitStatus): number {
+  switch (status) {
+    case "unknown-id":
+      return 0;
+    case "sync-issue":
+      return 1;
+    case "pending":
+      return 2;
+    case "expired":
+      return 3;
+    case "full-mode-warning":
+      return 4;
+    case "consumed":
+      return 5;
+    case "resolved":
+      return 6;
+    case "unknown":
+      return 7;
   }
 }
 
