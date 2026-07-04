@@ -10,6 +10,7 @@ const NAV = [
       { to: "/timeline", label: "Live Timeline" },
       { to: "/work", label: "Work Board" },
       { to: "/graph", label: "Work Graph" },
+      { to: "/map", label: "Thread Map" },
     ],
   },
   {
