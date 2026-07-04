@@ -218,6 +218,53 @@ export interface WorkBoardModel {
   summary: Record<WorkItemState, number>;
 }
 
+export type ReviewItemKind = "completed" | "failed" | "cancelled" | "changed" | "needs-review" | "stale";
+
+export interface ReviewItem {
+  id: string;
+  kind: ReviewItemKind;
+  categories: ReviewItemKind[];
+  tone: AttentionTone | "ok";
+  title: string;
+  summary?: string;
+  status: string;
+  nextAction: string;
+  ageLabel: string;
+  updatedAt?: string;
+  changedAt?: string;
+  completedAt?: string;
+  lastSeenAt?: string;
+  sinceLastSeen: boolean;
+  delivered: boolean;
+  deliveryStatus?: string;
+  agentLabel?: string;
+  sessionLabel?: string;
+  links: RuntimeLinks;
+  workItem: WorkItem;
+  task?: TaskSummary;
+  events: TimelineEvent[];
+}
+
+export interface ReviewQueueModel {
+  items: ReviewItem[];
+  recentlyCompleted: ReviewItem[];
+  recentlyFailed: ReviewItem[];
+  changedSinceLastSeen: ReviewItem[];
+  needsReview: ReviewItem[];
+  stale: ReviewItem[];
+  lastSeenAt?: string;
+  summary: {
+    total: number;
+    recentlyCompleted: number;
+    recentlyFailed: number;
+    changedSinceLastSeen: number;
+    needsReview: number;
+    stale: number;
+    cancelled: number;
+    delivered: number;
+  };
+}
+
 export type ThreadSessionMapSourceKind = "channel" | "thread" | "session" | "task" | "approval";
 export type ThreadSessionMapState = "active" | "waiting" | "queued" | "completed" | "failed" | "archived" | "stale" | "unknown";
 
@@ -292,6 +339,7 @@ export interface DashboardModel {
   activeWork: ActiveWorkItem[];
   controlCenter: ControlCenterOverview;
   workBoard: WorkBoardModel;
+  reviewQueue: ReviewQueueModel;
   threadSessionMap: ThreadSessionMapModel;
   workGraph: WorkGraphModel;
   attention: AttentionItem[];
@@ -313,12 +361,15 @@ export interface DashboardModelOptions {
   activeSessionStaleAfterMs?: number;
   longRunningTaskAfterMs?: number;
   recentEventLimit?: number;
+  reviewLastSeenAt?: string;
+  reviewQueueLimit?: number;
 }
 
 const DEFAULT_SNAPSHOT_STALE_AFTER_MS = 30_000;
 const DEFAULT_ACTIVE_SESSION_STALE_AFTER_MS = 5 * 60_000;
 const DEFAULT_LONG_RUNNING_TASK_AFTER_MS = 30 * 60_000;
 const DEFAULT_RECENT_EVENT_LIMIT = 20;
+const DEFAULT_REVIEW_QUEUE_LIMIT = 20;
 const NOISE_EVENT_KINDS = new Set(["health", "presence", "heartbeat"]);
 
 export function buildDashboardModel(
@@ -345,6 +396,12 @@ export function buildDashboardModel(
     activeSessionStaleAfterMs,
   });
   const workBoard = buildWorkBoardModel(snapshot, timeline, { nowMs });
+  const reviewQueue = buildReviewQueueModel(workBoard, {
+    nowMs,
+    lastSeenAt: options.reviewLastSeenAt,
+    staleAfterMs: activeSessionStaleAfterMs,
+    itemLimit: options.reviewQueueLimit,
+  });
   const threadSessionMap = buildThreadSessionMapModel(snapshot, timeline, {
     nowMs,
     activeSessionStaleAfterMs,
@@ -390,6 +447,7 @@ export function buildDashboardModel(
     activeWork,
     controlCenter: buildControlCenterOverview(snapshot, { activeWork, attention, pendingApprovals, failedTasks }),
     workBoard,
+    reviewQueue,
     threadSessionMap,
     workGraph,
     attention,
@@ -553,7 +611,7 @@ function buildControlCenterOverview(
     .map((item) => controlCenterItemFromAttention(item, "attention"));
 
   const recentlyCompleted = snapshot.tasks
-    .filter((task) => task.status === "completed")
+    .filter((task) => task.status === "completed" || task.status === "cancelled")
     .map((task) => controlCenterItemFromTask(task, "recentlyCompleted", agentsById, sessionsByKey))
     .sort(compareControlCenterItems)
     .slice(0, 8);
@@ -666,6 +724,65 @@ export function buildWorkBoardModel(
       items: items.filter((item) => item.state === column.id),
     })),
     summary,
+  };
+}
+
+export function buildReviewQueueModel(
+  workBoard: WorkBoardModel,
+  options: {
+    nowMs?: number;
+    lastSeenAt?: string;
+    staleAfterMs?: number;
+    itemLimit?: number;
+  } = {},
+): ReviewQueueModel {
+  const nowMs = options.nowMs ?? Date.now();
+  const staleAfterMs = options.staleAfterMs ?? DEFAULT_ACTIVE_SESSION_STALE_AFTER_MS;
+  const itemLimit = options.itemLimit ?? DEFAULT_REVIEW_QUEUE_LIMIT;
+  const items = workBoard.items
+    .map((item) => reviewItemFromWorkItem(item, { nowMs, lastSeenAt: options.lastSeenAt, staleAfterMs }))
+    .filter((item): item is ReviewItem => Boolean(item))
+    .sort(compareReviewItems);
+
+  const recentlyCompleted = items
+    .filter((item) => item.categories.includes("completed") || item.categories.includes("cancelled"))
+    .sort(compareReviewItemsByActivity)
+    .slice(0, itemLimit);
+  const recentlyFailed = items
+    .filter((item) => item.categories.includes("failed"))
+    .sort(compareReviewItemsByActivity)
+    .slice(0, itemLimit);
+  const changedSinceLastSeen = items
+    .filter((item) => item.sinceLastSeen)
+    .sort(compareReviewItemsByActivity)
+    .slice(0, itemLimit);
+  const needsReview = items
+    .filter((item) => item.categories.includes("needs-review"))
+    .sort(compareReviewItemsByActivity)
+    .slice(0, itemLimit);
+  const stale = items
+    .filter((item) => item.categories.includes("stale"))
+    .sort(compareReviewItemsByActivity)
+    .slice(0, itemLimit);
+
+  return {
+    items: items.slice(0, itemLimit),
+    recentlyCompleted,
+    recentlyFailed,
+    changedSinceLastSeen,
+    needsReview,
+    stale,
+    lastSeenAt: options.lastSeenAt,
+    summary: {
+      total: items.length,
+      recentlyCompleted: recentlyCompleted.length,
+      recentlyFailed: recentlyFailed.length,
+      changedSinceLastSeen: changedSinceLastSeen.length,
+      needsReview: needsReview.length,
+      stale: stale.length,
+      cancelled: items.filter((item) => item.categories.includes("cancelled")).length,
+      delivered: items.filter((item) => item.delivered).length,
+    },
   };
 }
 
@@ -936,6 +1053,144 @@ function workItemFromSeed(
       approvalId: primaryApproval?.status === "pending" ? primaryApproval.id : undefined,
     }),
   };
+}
+
+function reviewItemFromWorkItem(
+  item: WorkItem,
+  context: { nowMs: number; lastSeenAt?: string; staleAfterMs: number },
+): ReviewItem | null {
+  const task = primaryReviewTaskForWorkItem(item.evidence.tasks);
+  const categories: ReviewItemKind[] = [];
+  const terminalStatus = task?.status;
+
+  if (item.state === "failed" || terminalStatus === "failed" || terminalStatus === "timed_out") categories.push("failed");
+  if (terminalStatus === "cancelled") categories.push("cancelled");
+  if (item.state === "done" || terminalStatus === "completed") categories.push("completed");
+  if (item.state === "review") categories.push("needs-review");
+  if (isStaleReviewWorkItem(item, context.nowMs, context.staleAfterMs)) categories.push("stale");
+
+  const changedAt = newestTimestamp([
+    item.updatedAt,
+    ...item.evidence.tasks.map((candidate) => candidate.endedAt ?? candidate.startedAt),
+    ...item.evidence.sessions.map((session) => session.updatedAt ?? session.lastInteractionAt),
+    ...item.evidence.events.map((event) => event.timestamp),
+  ]);
+  const sinceLastSeen = isAfter(changedAt, context.lastSeenAt);
+  if (sinceLastSeen) categories.push("changed");
+
+  const uniqueCategories = dedupe(categories);
+  if (uniqueCategories.length === 0) return null;
+
+  const deliveryStatus = deliveryStatusForEvents(item.evidence.events);
+  const delivered = deliveryStatus?.toLowerCase() === "delivered" || deliveryStatus?.toLowerCase() === "published";
+  const completedAt = task?.endedAt ?? (item.state === "done" || item.state === "failed" ? item.updatedAt : undefined);
+  const kind = primaryReviewKind(uniqueCategories);
+
+  return {
+    id: item.id,
+    kind,
+    categories: uniqueCategories,
+    tone: toneForReviewItem(kind, item.tone),
+    title: item.title,
+    summary: reviewSummaryForWorkItem(item, task, deliveryStatus),
+    status: task?.status ?? item.state,
+    nextAction: nextActionForReviewItem(kind, deliveryStatus),
+    ageLabel: formatAge(changedAt ?? completedAt ?? item.updatedAt ?? item.createdAt, context.nowMs),
+    updatedAt: item.updatedAt,
+    changedAt,
+    completedAt,
+    lastSeenAt: context.lastSeenAt,
+    sinceLastSeen,
+    delivered,
+    deliveryStatus,
+    agentLabel: item.agentLabel,
+    sessionLabel: item.sessionLabel,
+    links: item.links,
+    workItem: item,
+    task,
+    events: item.evidence.events,
+  } satisfies ReviewItem;
+}
+
+function primaryReviewTaskForWorkItem(tasks: TaskSummary[]): TaskSummary | undefined {
+  return [...tasks].sort((a, b) => {
+    const statusRank = rankReviewTaskStatus(a.status) - rankReviewTaskStatus(b.status);
+    if (statusRank !== 0) return statusRank;
+    return compareTasksByActivityDesc(a, b);
+  })[0];
+}
+
+function rankReviewTaskStatus(status: TaskSummary["status"]): number {
+  if (status === "failed" || status === "timed_out") return 0;
+  if (status === "cancelled") return 1;
+  if (status === "completed") return 2;
+  if (status === "running") return 3;
+  if (status === "queued") return 4;
+  return 5;
+}
+
+function primaryReviewKind(categories: ReviewItemKind[]): ReviewItemKind {
+  if (categories.includes("failed")) return "failed";
+  if (categories.includes("stale")) return "stale";
+  if (categories.includes("needs-review")) return "needs-review";
+  if (categories.includes("cancelled")) return "cancelled";
+  if (categories.includes("completed")) return "completed";
+  return "changed";
+}
+
+function toneForReviewItem(kind: ReviewItemKind, fallback: AttentionTone | "ok"): AttentionTone | "ok" {
+  if (kind === "failed") return "error";
+  if (kind === "stale") return "warn";
+  if (kind === "needs-review" || kind === "changed") return "info";
+  return fallback === "error" || fallback === "warn" ? fallback : "ok";
+}
+
+function reviewSummaryForWorkItem(
+  item: WorkItem,
+  task: TaskSummary | undefined,
+  deliveryStatus: string | undefined,
+): string | undefined {
+  if (task?.status === "failed" || task?.status === "timed_out") return task.error ?? item.summary ?? `${task.title ?? task.id} ${task.status}.`;
+  if (task?.status === "cancelled") return item.summary ?? `${task.title ?? task.id} was cancelled.`;
+  if (deliveryStatus) return item.summary ? `${item.summary} Delivery: ${deliveryStatus}.` : `Delivery: ${deliveryStatus}.`;
+  return item.summary;
+}
+
+function nextActionForReviewItem(kind: ReviewItemKind, deliveryStatus: string | undefined): string {
+  if (kind === "failed") return "Inspect the failure, recover or retry if appropriate, then archive when resolved.";
+  if (kind === "stale") return "Check whether the session is still alive or needs intervention.";
+  if (kind === "needs-review") return "Review the result and decide whether to continue, reopen, or archive.";
+  if (kind === "changed") return "Review changes since last seen and follow up if needed.";
+  if (kind === "cancelled") return "No action needed unless the cancellation was unexpected.";
+  if (deliveryStatus && deliveryStatus.toLowerCase() !== "delivered" && deliveryStatus.toLowerCase() !== "published") {
+    return "Confirm result delivery before archiving.";
+  }
+  return "Review the summary, then archive or dismiss if no follow-up is needed.";
+}
+
+function isStaleReviewWorkItem(item: WorkItem, nowMs: number, staleAfterMs: number): boolean {
+  if (item.state !== "active" && item.state !== "waiting") return false;
+  const timestamps = [
+    item.updatedAt,
+    ...item.evidence.sessions
+      .filter((session) => session.isActive || session.currentRunId || normalizeWorkStatusText(session.status) === "running")
+      .map((session) => session.updatedAt ?? session.lastInteractionAt),
+  ];
+  return timestamps.some((timestamp) => isOlderThan(timestamp, nowMs, staleAfterMs));
+}
+
+function deliveryStatusForEvents(events: TimelineEvent[]): string | undefined {
+  for (const event of [...events].sort(compareEventsDesc)) {
+    const direct = payloadString(event.payload, "deliveryStatus", "delivery", "deliveryState", "resultDeliveryStatus");
+    if (direct) return direct;
+    const delivered = payloadBoolean(event.payload, "delivered", "resultDelivered", "deliverySucceeded");
+    if (delivered !== undefined) return delivered ? "delivered" : "failed";
+
+    const text = `${event.title} ${event.summary ?? ""}`.toLowerCase();
+    if (text.includes("delivery failed") || text.includes("failed delivery")) return "failed";
+    if (text.includes("delivered") || text.includes("published")) return "delivered";
+  }
+  return undefined;
 }
 
 function controlCenterItemFromAttention(item: AttentionItem, lane: ControlCenterLane): ControlCenterItem {
@@ -1756,7 +2011,7 @@ function stateForWorkItem(input: {
   if (input.tasks.some((task) => task.status === "queued") || input.sessions.some((session) => normalizeWorkStatusText(session.status) === "queued")) {
     return "inbox";
   }
-  if (input.tasks.some((task) => task.status === "completed") || input.sessions.some((session) => normalizeWorkStatusText(session.status) === "completed")) {
+  if (input.tasks.some((task) => task.status === "completed" || task.status === "cancelled") || input.sessions.some((session) => normalizeWorkStatusText(session.status) === "completed")) {
     return "done";
   }
   return "inbox";
@@ -1806,7 +2061,7 @@ function summaryForWorkItem(input: {
 
   const task = primaryTaskForWorkItem(input.tasks);
   if (task?.title && input.state !== "done") return task.title;
-  if (input.state === "done" && task?.title) return `${task.title} completed.`;
+  if (input.state === "done" && task?.title) return `${task.title} ${task.status === "cancelled" ? "cancelled" : "completed"}.`;
   return undefined;
 }
 
@@ -1968,6 +2223,22 @@ function payloadString(payload: Record<string, unknown> | undefined, ...keys: st
   return undefined;
 }
 
+function payloadBoolean(payload: Record<string, unknown> | undefined, ...keys: string[]): boolean | undefined {
+  if (!payload) return undefined;
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "boolean") return value;
+  }
+  const parent = payload.parent;
+  if (parent && typeof parent === "object") {
+    for (const key of keys) {
+      const value = (parent as Record<string, unknown>)[key];
+      if (typeof value === "boolean") return value;
+    }
+  }
+  return undefined;
+}
+
 function workRoleForSession(session: SessionSummary): WorkGraphNodeRole {
   const kind = sessionKind(session.key);
   if (kind === "dashboard") return "dashboard";
@@ -2095,6 +2366,33 @@ function compareAttention(a: AttentionItem, b: AttentionItem): number {
 
 function compareEventsDesc(a: TimelineEvent, b: TimelineEvent): number {
   return parseTime(b.timestamp) - parseTime(a.timestamp);
+}
+
+function compareReviewItems(a: ReviewItem, b: ReviewItem): number {
+  const kindRank = rankReviewKind(a.kind) - rankReviewKind(b.kind);
+  if (kindRank !== 0) return kindRank;
+  return compareReviewItemsByActivity(a, b);
+}
+
+function compareReviewItemsByActivity(a: ReviewItem, b: ReviewItem): number {
+  return parseTime(b.changedAt ?? b.completedAt ?? b.updatedAt) - parseTime(a.changedAt ?? a.completedAt ?? a.updatedAt);
+}
+
+function rankReviewKind(kind: ReviewItemKind): number {
+  switch (kind) {
+    case "failed":
+      return 0;
+    case "stale":
+      return 1;
+    case "needs-review":
+      return 2;
+    case "changed":
+      return 3;
+    case "cancelled":
+      return 4;
+    case "completed":
+      return 5;
+  }
 }
 
 function compareControlCenterItems(a: ControlCenterItem, b: ControlCenterItem): number {
@@ -2256,6 +2554,12 @@ function isOlderThan(iso: string | undefined, nowMs: number, thresholdMs: number
   const ms = parseTime(iso);
   if (ms === 0) return false;
   return nowMs - ms > thresholdMs;
+}
+
+function isAfter(iso: string | undefined, baselineIso: string | undefined): boolean {
+  const ms = parseTime(iso);
+  const baselineMs = parseTime(baselineIso);
+  return ms > 0 && baselineMs > 0 && ms > baselineMs;
 }
 
 function parseTime(iso?: string): number {

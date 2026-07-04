@@ -1625,7 +1625,8 @@ textarea {
 .work-board-toolbar,
 .work-board-lane-head,
 .work-board-card-title-row,
-.work-board-links {
+.work-board-links,
+.work-board-review-head {
   display: flex;
   gap: 0.75rem;
 }
@@ -1696,6 +1697,34 @@ textarea {
   border-style: dashed;
 }
 
+.work-board-review {
+  border-left: 3px solid var(--warn);
+}
+
+.work-board-review-head {
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 0.85rem;
+}
+
+.work-board-review-list {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.work-board-review-item {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.work-board-review-meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
 .work-board-lanes {
   align-items: start;
   display: grid;
@@ -1726,6 +1755,10 @@ textarea {
   display: grid;
   gap: 0.65rem;
   padding: 0.85rem;
+}
+
+.work-board-card-compact {
+  gap: 0.5rem;
 }
 
 .work-board-card-ok {
@@ -1779,7 +1812,8 @@ textarea {
 
 @media (max-width: 760px) {
   .work-board-header,
-  .work-board-toolbar {
+  .work-board-toolbar,
+  .work-board-review-head {
     align-items: stretch;
     flex-direction: column;
   }
