@@ -24,11 +24,11 @@ export function ApprovalsPage() {
   if (!snapshot || !model) return <p>Loading…</p>;
 
   return (
-    <div className="approvals-page">
-      <div className="approvals-header">
+    <div className="page-shell approvals-page">
+      <div className="page-header approvals-header">
         <div>
           <h1 className="page-title">Approval Cockpit</h1>
-          <p className="work-board-subtitle">
+          <p className="page-subtitle">
             Read-only exec/plugin approval evidence. Decision buttons are disabled until backend confirmation/action metadata is explicit.
           </p>
         </div>
@@ -117,7 +117,7 @@ function ApprovalCockpitDetailCard({ item }: { item: ApprovalCockpitItem }) {
         ))}
         {item.disabledActions.map((action) => (
           <span key={action.label} className="operator-action-chip operator-action-chip-disabled" title={action.disabledReason}>
-            {action.label} unavailable: {action.disabledReason}
+            {action.label}
           </span>
         ))}
       </div>

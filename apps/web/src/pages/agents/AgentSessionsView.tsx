@@ -62,7 +62,7 @@ export function AgentSessionsView() {
   if (!snapshot) return <p className="office-loading">Loading…</p>;
   if (!stats) {
     return (
-      <div className="office-page">
+      <div className="page-shell office-page">
         <Breadcrumb items={[{ label: "Agent Office", to: "/agents" }, { label: agentId || "Unknown" }]} />
         <EmptyState title="Agent not found" hint="It may have been removed from the gateway config." />
         <Link className="office-back" to="/agents">
@@ -75,7 +75,7 @@ export function AgentSessionsView() {
   const primarySession = stats.activeSessions[0];
 
   return (
-    <div className="office-page">
+    <div className="page-shell office-page">
       <Link className="office-back" to="/agents">
         ← All agents
       </Link>

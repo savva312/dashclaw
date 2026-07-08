@@ -5,9 +5,8 @@ test.describe("Discord workflow browser smoke", () => {
     await page.goto("/");
 
     await expect(page.getByRole("heading", { name: "Command Center" })).toBeVisible();
-    await expect(page.getByText("Active work and operator action queue.")).toBeVisible();
-    await expect(page.getByLabel("Safe action affordances").first()).toBeVisible();
-    await expect(page.getByRole("link", { name: "Open work board" }).first()).toBeVisible();
+    await expect(page.getByText("What needs you next — open an item to drill into task, session, or agent detail.")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Work board" }).first()).toBeVisible();
   });
 
   test("renders the Work Board review queue and operator action chips", async ({ page }) => {

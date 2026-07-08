@@ -384,8 +384,10 @@
 
 .dc-auth-screen {
   min-height: 100vh;
-  display: grid;
-  place-items: center;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 2rem;
   background:
     radial-gradient(circle at 20% 10%, rgba(45, 212, 191, 0.08), transparent 35%),
