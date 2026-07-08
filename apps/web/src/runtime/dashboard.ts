@@ -205,6 +205,10 @@ export interface ControlCenterItem {
 }
 
 export interface ControlCenterOverview {
+  summary: Record<ControlCenterLane, number> & {
+    operatorQueue: number;
+    totalVisible: number;
+  };
   activeNow: ControlCenterItem[];
   waitingOnMe: ControlCenterItem[];
   attention: ControlCenterItem[];
@@ -792,7 +796,23 @@ function buildControlCenterOverview(
     .map((task) => controlCenterItemFromTask(task, "failedRecoverable", agentsById, sessionsByKey))
     .sort(compareControlCenterItems);
 
+  const summary = {
+    activeNow: activeNow.length,
+    waitingOnMe: waitingOnMe.length,
+    attention: attention.length,
+    recentlyCompleted: recentlyCompleted.length,
+    failedRecoverable: failedRecoverable.length,
+    operatorQueue: waitingOnMe.length + attention.length + failedRecoverable.length,
+    totalVisible:
+      activeNow.length +
+      waitingOnMe.length +
+      attention.length +
+      recentlyCompleted.length +
+      failedRecoverable.length,
+  };
+
   return {
+    summary,
     activeNow,
     waitingOnMe,
     attention,
