@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAppState } from "../context";
-import { buildDashboardModel, type AttentionTone, type DeliveryRecoveryState, type OperatorAction, type ReviewItem, type WorkBoardColumn, type WorkItem } from "../runtime/dashboard";
+import { buildDashboardModel, type AttentionTone, type DeliveryRecoveryState, type ReviewItem, type WorkBoardColumn, type WorkItem } from "../runtime/dashboard";
+import { formatCompactTitle } from "../lib/format";
 
 function badgeClassForTone(tone: AttentionTone | "ok") {
   if (tone === "ok") return "ok";
@@ -136,11 +137,11 @@ export function WorkBoardPage() {
   };
 
   return (
-    <div className="work-board-page">
-      <div className="work-board-header">
+    <div className="page-shell work-board-page">
+      <div className="page-header work-board-header">
         <div>
           <h1 className="page-title">Work Board</h1>
-          <p className="work-board-subtitle">
+          <p className="page-subtitle">
             Read-only board for durable work items across threads, sessions, tasks, approvals, and partial-lineage evidence.
           </p>
         </div>
@@ -261,10 +262,10 @@ function WorkBoardCard({ item, compact = false }: { item: WorkItem; compact?: bo
   return (
     <article className={`work-board-card work-board-card-${badgeClassForTone(item.tone)}${compact ? " work-board-card-compact" : ""}`}>
       <div className="work-board-card-title-row">
-        <strong>{primaryLink ? <Link to={primaryLink}>{item.title}</Link> : item.title}</strong>
+        <strong className="text-clamp-2">{primaryLink ? <Link to={primaryLink} title={item.title}>{formatCompactTitle(item.title)}</Link> : formatCompactTitle(item.title)}</strong>
         <span className={`badge ${badgeClassForTone(item.tone)}`}>{item.state}</span>
       </div>
-      {item.summary ? <p className="work-board-card-summary">{item.summary}</p> : null}
+      {item.summary ? <p className="work-board-card-summary text-clamp-2">{item.summary}</p> : null}
       <dl className="work-board-evidence">
         <div>
           <dt>Agent</dt>
@@ -284,8 +285,7 @@ function WorkBoardCard({ item, compact = false }: { item: WorkItem; compact?: bo
         </div>
       </dl>
       <DeliveryRecoveryCard delivery={item.deliveryRecovery} compact={compact} />
-      {item.currentAction ? <div className="work-board-next">Current: {item.currentAction}</div> : null}
-      {item.operatorActions?.length ? <OperatorActionChips actions={item.operatorActions} /> : null}
+      {item.currentAction ? <div className="work-board-next text-clip">Current: {item.currentAction}</div> : null}
       {incomplete ? <div className="badge warn">{item.lineage.diagnostic ?? "lineage incomplete"}</div> : null}
       <div className="work-board-links">
         {item.links.task ? <Link to={item.links.task}>Task</Link> : null}
@@ -299,6 +299,7 @@ function WorkBoardCard({ item, compact = false }: { item: WorkItem; compact?: bo
 }
 
 function DeliveryRecoveryCard({ delivery, compact }: { delivery: DeliveryRecoveryState; compact?: boolean }) {
+  if (delivery.status === "unknown") return null;
   if (compact && delivery.status === "unknown") return null;
   return (
     <div className={`delivery-recovery-card delivery-recovery-${delivery.status}`}>
@@ -322,29 +323,11 @@ function DeliveryRecoveryCard({ delivery, compact }: { delivery: DeliveryRecover
         <div className="operator-action-chips" aria-label="Disabled recovery actions">
           {delivery.disabledActions.map((action) => (
             <span key={action.label} className="operator-action-chip operator-action-chip-disabled" title={action.disabledReason}>
-              {action.label} unavailable: {action.disabledReason}
+              {action.label}
             </span>
           ))}
         </div>
       ) : null}
-    </div>
-  );
-}
-
-function OperatorActionChips({ actions }: { actions: OperatorAction[] }) {
-  const visible = actions.filter((action) => action.enabled || action.kind !== "navigation").slice(0, 5);
-  if (visible.length === 0) return null;
-  return (
-    <div className="operator-action-chips" aria-label="Safe action affordances">
-      {visible.map((action) =>
-        action.enabled && action.href ? (
-          <Link key={action.id} className="operator-action-chip" to={action.href}>{action.label}</Link>
-        ) : (
-          <span key={action.id} className="operator-action-chip operator-action-chip-disabled" title={action.disabledReason ?? "Action unavailable"}>
-            {action.label} unavailable: {action.disabledReason ?? "missing backend action metadata"}
-          </span>
-        ),
-      )}
     </div>
   );
 }

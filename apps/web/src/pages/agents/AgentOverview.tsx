@@ -37,14 +37,14 @@ export function AgentOverview() {
 
   if (!snapshot) {
     return (
-      <div className="office-page">
+      <div className="page-shell office-page">
         <Skeleton lines={3} className="office-page-skeleton" />
       </div>
     );
   }
 
   return (
-    <div className="office-page">
+    <div className="page-shell office-page">
       <Breadcrumb items={[{ label: "Agent Office" }]} />
 
       <PageHeader

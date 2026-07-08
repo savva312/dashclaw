@@ -116,11 +116,11 @@ export function WorkGraphPage() {
   if (!snapshot || !model || !graph || !visibleGraph || !layout) return <p>Loading…</p>;
 
   return (
-    <div className="work-graph-page">
-      <div className="work-graph-header">
+    <div className="page-shell work-graph-page">
+      <div className="page-header work-graph-header">
         <div>
           <h1 className="page-title">Work Graph</h1>
-          <p className="work-graph-subtitle">
+          <p className="page-subtitle">
             Full live lineage view of agents, sessions, subagents, tasks, cron jobs, and failure paths.
           </p>
         </div>

@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { useAppState } from "../context";
+import { formatCompactTitle } from "../lib/format";
 
 export function TasksPage() {
   const { snapshot } = useAppState();
@@ -13,18 +14,25 @@ export function TasksPage() {
   };
 
   return (
-    <>
-      <h1 className="page-title">Task Ledger</h1>
-      <div className="grid grid-4" style={{ marginBottom: "1.5rem" }}>
+    <div className="page-shell tasks-page">
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Task Ledger</h1>
+          <p className="page-subtitle">Durable task history across agents, sessions, and runs.</p>
+        </div>
+      </div>
+
+      <div className="grid grid-4">
         {(["running", "queued", "failed", "done"] as const).map((k) => (
-          <div key={k} className="card">
+          <div key={k} className="card stat-card">
             <h3>{k}</h3>
             <div className="stat-value">{groups[k].length}</div>
           </div>
         ))}
       </div>
-      <div className="card">
-        <table className="table">
+
+      <div className="card tasks-table-wrap">
+        <table className="table tasks-table">
           <thead>
             <tr><th>Task</th><th>Status</th><th>Agent</th><th>Session</th><th>Run</th></tr>
           </thead>
@@ -34,25 +42,27 @@ export function TasksPage() {
             ) : (
               tasks.map((t) => (
                 <tr key={t.id}>
-                  <td>
-                    <Link to={`/tasks/${encodeURIComponent(t.id)}`}>{t.title ?? t.id}</Link>
+                  <td className="cell-clip">
+                    <Link className="text-clip" to={`/tasks/${encodeURIComponent(t.id)}`} title={t.title ?? t.id}>
+                      {formatCompactTitle(t.title ?? t.id)}
+                    </Link>
                   </td>
                   <td><span className={`badge ${t.status === "running" ? "ok" : t.status === "failed" ? "error" : "neutral"}`}>{t.status}</span></td>
-                  <td>{t.agentId ? <Link to={`/agents/${encodeURIComponent(t.agentId)}`}>{t.agentId}</Link> : "—"}</td>
-                  <td className="mono">
+                  <td className="text-clip">{t.agentId ? <Link to={`/agents/${encodeURIComponent(t.agentId)}`}>{t.agentId}</Link> : "—"}</td>
+                  <td className="mono text-clip">
                     {t.agentId && t.sessionKey ? (
                       <Link to={`/agents/${encodeURIComponent(t.agentId)}/sessions/${encodeURIComponent(t.sessionKey)}`}>{t.sessionKey}</Link>
                     ) : (
                       t.sessionKey ?? "—"
                     )}
                   </td>
-                  <td className="mono">{t.runId ?? "—"}</td>
+                  <td className="mono text-clip">{t.runId ?? "—"}</td>
                 </tr>
               ))
             )}
           </tbody>
         </table>
       </div>
-    </>
+    </div>
   );
 }

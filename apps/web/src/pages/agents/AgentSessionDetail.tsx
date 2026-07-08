@@ -66,7 +66,7 @@ export function AgentSessionDetail() {
   if (!snapshot) return <p className="office-loading">Loading…</p>;
   if (!agent || !session) {
     return (
-      <div className="office-page">
+      <div className="page-shell office-page">
         <Link className="office-back" to={agentId ? `/agents/${encodeURIComponent(agentId)}` : "/agents"}>
           ← Back
         </Link>
@@ -78,7 +78,7 @@ export function AgentSessionDetail() {
   const kind = parseSessionKind(session.key);
 
   return (
-    <div className="office-page">
+    <div className="page-shell office-page">
       <Link className="office-back" to={`/agents/${encodeURIComponent(agentId)}`}>
         ← {agent.name ?? agent.id}
       </Link>

@@ -39,7 +39,7 @@ export function TaskDetailPage() {
 
   if (!detail) {
     return (
-      <div className="task-detail-page">
+      <div className="page-shell task-detail-page">
         <Link className="office-back" to="/tasks">
           Back to Task Ledger
         </Link>
@@ -51,7 +51,7 @@ export function TaskDetailPage() {
   const { task, agent, session, events, links, deliveryRecovery } = detail;
 
   return (
-    <div className="task-detail-page">
+    <div className="page-shell task-detail-page">
       <Link className="office-back" to="/tasks">
         Back to Task Ledger
       </Link>
@@ -115,7 +115,7 @@ export function TaskDetailPage() {
             <div className="operator-action-chips" aria-label="Disabled recovery actions">
               {deliveryRecovery.disabledActions.map((action) => (
                 <span key={action.label} className="operator-action-chip operator-action-chip-disabled" title={action.disabledReason}>
-                  {action.label} unavailable: {action.disabledReason}
+                  {action.label}
                 </span>
               ))}
             </div>

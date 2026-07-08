@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import type { SessionSummary, TaskSummary } from "@dashclaw/runtime-model";
 import { useAppState } from "../context";
 import { buildDashboardModel, linksFor, type AttentionTone, type ThreadSessionMapEntry } from "../runtime/dashboard";
+import { formatCompactTitle } from "../lib/format";
 
 function badgeClassForTone(tone: AttentionTone | "ok") {
   if (tone === "ok") return "ok";
@@ -56,13 +57,15 @@ export function ThreadMapPage() {
   if (!snapshot || !model || !map) return <p>Loading…</p>;
 
   const diagnostics = map.summary.partialLineage + map.summary.missingLineage + map.metadataGaps.length;
+  const displayEntries = visibleEntries.slice(0, 48);
+  const truncated = visibleEntries.length > displayEntries.length;
 
   return (
-    <div className="thread-map-page">
-      <div className="thread-map-header">
+    <div className="page-shell thread-map-page">
+      <div className="page-header thread-map-header">
         <div>
           <h1 className="page-title">Thread Map</h1>
-          <p className="thread-map-subtitle">
+          <p className="page-subtitle">
             Reverse lookup for Discord/source conversations, OpenClaw sessions, child lanes, tasks, and incomplete lineage.
           </p>
         </div>
@@ -112,8 +115,13 @@ export function ThreadMapPage() {
       ) : null}
 
       <div className="thread-map-list" aria-label="Thread and session map rows">
-        {visibleEntries.map((entry) => <ThreadMapCard key={entry.id} entry={entry} />)}
+        {displayEntries.map((entry) => <ThreadMapCard key={entry.id} entry={entry} />)}
       </div>
+      {truncated ? (
+        <p className="stat-label thread-map-truncation">
+          Showing {displayEntries.length} of {visibleEntries.length} matching sources. Refine search to narrow results.
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -137,7 +145,7 @@ function ThreadMapCard({ entry }: { entry: ThreadSessionMapEntry }) {
         <div>
           <div className="thread-map-title-row">
             <span className="badge neutral">{entry.source.kind}</span>
-            <strong><Link to={primaryLink}>{entry.source.label}</Link></strong>
+            <strong><Link to={primaryLink} title={entry.source.label}>{formatCompactTitle(entry.source.label, 56)}</Link></strong>
           </div>
           <p className="thread-map-source-line">{sourceLine(entry)}</p>
         </div>

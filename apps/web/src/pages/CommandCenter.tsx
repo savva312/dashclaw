@@ -6,10 +6,6 @@ import {
   type AttentionTone,
   type ControlCenterItem,
   type ControlCenterLane,
-  type OperatorAction,
-  type WorkGraphModel,
-  type WorkGraphNode,
-  type WorkGraphStatus,
 } from "../runtime/dashboard";
 
 function formatUptime(ms?: number): string {
@@ -46,22 +42,26 @@ export function CommandCenterPage() {
   )[0];
 
   return (
-    <>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+    <div className="page-shell command-center-page">
+      <div className="page-header">
         <h1 className="page-title">Command Center</h1>
-        <button className="btn" type="button" onClick={() => void refresh()}>Refresh</button>
+        <div className="page-header-actions">
+          <Link className="btn" to="/graph">Work graph</Link>
+          <Link className="btn" to="/work">Work board</Link>
+          <button className="btn" type="button" onClick={() => void refresh()}>Refresh</button>
+        </div>
       </div>
 
       <RuntimeStateCard model={model} liveConnected={liveConnected} />
 
       <ControlCenterOverviewCard model={model.controlCenter} />
 
-      <InterventionCard model={model.interventionSummary} />
+      {model.approvalCockpit.summary.pending > 0 || model.approvalCockpit.summary["sync-issue"] > 0 || model.approvalCockpit.summary.expired > 0 ? (
+        <ApprovalCockpitCard model={model.approvalCockpit} />
+      ) : null}
 
-      <ApprovalCockpitCard model={model.approvalCockpit} />
-
-      <div className="grid grid-4" style={{ marginBottom: "1.5rem" }}>
-        <div className="card">
+      <div className="grid grid-4 command-center-stats">
+        <div className="card stat-card">
           <h3>Gateway</h3>
           <div className="stat-value">
             <span className={`badge ${s.connectionState === "connected" ? "ok" : "error"}`}>
@@ -74,80 +74,62 @@ export function CommandCenterPage() {
             {model.isStale ? " · stale" : model.isLive ? " · live" : " · verify"}
           </div>
         </div>
-        <div className="card">
+        <div className="card stat-card">
           <h3>Active Runs</h3>
           <div className="stat-value">{s.activeRunCount}</div>
           <div className="stat-label">
-            {s.tasks.filter((t) => t.status === "running").length} tasks running · updated{" "}
-            {new Date(s.updatedAt).toLocaleTimeString()}
+            {s.tasks.filter((t) => t.status === "running").length} tasks running · {s.agents.length} agents
           </div>
         </div>
-        <div className="card">
+        <div className="card stat-card">
           <h3>Pending Approvals</h3>
           <div className="stat-value">{s.pendingApprovalCount}</div>
           <div className="stat-label">exec / plugin queue</div>
         </div>
-        <div className="card">
+        <div className="card stat-card">
           <h3>Failed Tasks</h3>
           <div className="stat-value">{s.failedTaskCount}</div>
           <div className="stat-label">failed or timed out</div>
         </div>
       </div>
 
-      <WorkGraphCard graph={model.workGraph} />
-
-      <div className="grid grid-2">
-        <div className="card">
-          <h3>Agents ({s.agents.length})</h3>
-          {s.agents.length === 0 ? (
-            <p className="empty">No agents reported</p>
-          ) : (
-            <table className="table">
-              <thead>
-                <tr><th>Agent</th><th>Model</th><th>Runtime</th></tr>
-              </thead>
-              <tbody>
-                {s.agents.map((a) => (
-                  <tr key={a.id}>
-                    <td><Link to={`/agents/${encodeURIComponent(a.id)}`}>{a.name ?? a.id}</Link></td>
-                    <td className="mono">{a.model ?? "—"}</td>
-                    <td>{a.runtime ?? "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+      <div className="card command-center-activity">
+        <div className="command-center-activity-head">
+          <h3>Recent activity</h3>
+          <Link className="stat-label" to="/tasks">Open task ledger</Link>
         </div>
-        <div className="card">
-          <h3>Recent Tasks</h3>
-          {s.tasks.slice(0, 8).length === 0 ? (
-            <p className="empty">No tasks in ledger</p>
-          ) : (
-            <table className="table">
-              <thead>
-                <tr><th>Title</th><th>Status</th><th>Agent</th></tr>
-              </thead>
-              <tbody>
-                {s.tasks.slice(0, 8).map((t) => (
-                  <tr key={t.id}>
-                    <td><Link to={`/tasks/${encodeURIComponent(t.id)}`}>{t.title ?? t.id}</Link></td>
-                    <td><span className={`badge ${t.status === "running" ? "ok" : t.status === "failed" ? "error" : "neutral"}`}>{t.status}</span></td>
-                    <td>{t.agentId ? <Link to={`/agents/${encodeURIComponent(t.agentId)}`}>{t.agentId}</Link> : "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+        {s.tasks.length === 0 ? (
+          <p className="empty">No tasks in ledger</p>
+        ) : (
+          <table className="table command-center-activity-table">
+            <thead>
+              <tr><th>Title</th><th>Status</th><th>Agent</th><th>Updated</th></tr>
+            </thead>
+            <tbody>
+              {s.tasks.slice(0, 6).map((t) => (
+                <tr key={t.id}>
+                  <td className="cell-clip">
+                    <Link className="text-clip" to={`/tasks/${encodeURIComponent(t.id)}`} title={t.title ?? t.id}>
+                      {formatItemTitle(t.title ?? t.id)}
+                    </Link>
+                  </td>
+                  <td><span className={`badge ${t.status === "running" ? "ok" : t.status === "failed" ? "error" : "neutral"}`}>{t.status}</span></td>
+                  <td className="text-clip">{t.agentId ?? "—"}</td>
+                  <td className="stat-label">{t.endedAt ? formatAge(t.endedAt) : t.startedAt ? formatAge(t.startedAt) : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
-    </>
+    </div>
   );
 }
 
 function ApprovalCockpitCard({ model }: { model: ReturnType<typeof buildDashboardModel>["approvalCockpit"] }) {
-  const visible = model.items.slice(0, 6);
+  const visible = model.items.slice(0, 3);
   return (
-    <div className="card approval-cockpit" style={{ marginBottom: "1.5rem" }}>
+    <div className="card approval-cockpit">
       <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "flex-start" }}>
         <div>
           <h3>Exec Approval Cockpit</h3>
@@ -178,28 +160,28 @@ function ApprovalCockpitMiniCard({ item }: { item: ApprovalCockpitItem }) {
       <div className="approval-cockpit-head">
         <div>
           <strong>{item.kind === "exec" ? "Exec approval" : item.kind === "plugin" ? "Plugin approval" : "Approval evidence"}</strong>
-          <div className="stat-label mono">{item.id}</div>
+          <div className="stat-label mono text-clip">{item.id}</div>
         </div>
         <span className={`badge ${badgeClassForTone(item.tone)}`}>{item.statusLabel}</span>
       </div>
       <pre className="approval-command">{item.command}</pre>
-      <dl className="approval-cockpit-details">
-        <div><dt>cwd</dt><dd className="mono">{item.cwd ?? "not reported"}</dd></div>
-        <div><dt>host</dt><dd className="mono">{item.host ?? "not reported"}</dd></div>
-        <div><dt>origin</dt><dd className="mono">{[item.origin.agentId && `agent:${item.origin.agentId}`, item.origin.sessionKey && `session:${item.origin.sessionKey}`, item.origin.taskId && `task:${item.origin.taskId}`].filter(Boolean).join(" · ") || "not linked"}</dd></div>
-        <div><dt>timeout/status</dt><dd>{item.timeout ?? "timeout not reported"}</dd></div>
-      </dl>
-      <p className="approval-risk">{item.riskSummary}</p>
+      <p className="approval-risk text-clamp-2">{item.riskSummary}</p>
       <div className="operator-action-chips" aria-label="Approval evidence links and disabled decisions">
-        {item.evidence.map((evidence) => evidence.href ? <Link key={`${evidence.label}:${evidence.href}`} className="operator-action-chip" to={evidence.href}>{evidence.label}</Link> : null)}
-        {item.disabledActions.map((action) => (
-          <span key={action.label} className="operator-action-chip operator-action-chip-disabled" title={action.disabledReason}>
-            {action.label} unavailable: {action.disabledReason}
+        {item.evidence.slice(0, 4).map((evidence) => evidence.href ? <Link key={`${evidence.label}:${evidence.href}`} className="operator-action-chip" to={evidence.href}>{evidence.label}</Link> : null)}
+        {item.disabledActions.slice(0, 2).map((action) => (
+          <span key={action.label} className="operator-action-chip operator-action-chip-disabled" title={`${action.label} unavailable: ${action.disabledReason}`}>
+            {action.label}
           </span>
         ))}
       </div>
     </article>
   );
+}
+
+import { formatCompactTitle } from "../lib/format";
+
+function formatItemTitle(title: string): string {
+  return formatCompactTitle(title);
 }
 
 function ControlCenterOverviewCard({
@@ -215,13 +197,15 @@ function ControlCenterOverviewCard({
     { key: "recentlyCompleted", title: "Recently Completed", empty: "No completed tasks yet." },
   ];
 
+  const visibleLanes = lanes.filter((lane) => model[lane.key].length > 0);
+
   return (
-    <div className="card" style={{ marginBottom: "1.5rem" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "baseline" }}>
+    <div className="card control-center-card">
+      <div className="control-center-card-head">
         <div>
-          <h3>Control Center</h3>
-          <p className="stat-label" style={{ marginTop: "0.35rem" }}>
-            Active work and operator action queue. <Link to="#work-graph">View lineage / graph</Link>
+          <h3>Operator queue</h3>
+          <p className="stat-label control-center-card-copy">
+            What needs you next — open an item to drill into task, session, or agent detail.
           </p>
         </div>
         <span className={`badge ${model.summary.operatorQueue > 0 ? "warn" : "ok"}`}>
@@ -235,11 +219,21 @@ function ControlCenterOverviewCard({
         <ControlCenterSummaryStat label="failed" value={model.summary.failedRecoverable} tone={model.summary.failedRecoverable > 0 ? "error" : "neutral"} />
         <ControlCenterSummaryStat label="completed" value={model.summary.recentlyCompleted} tone="neutral" />
       </div>
-      <div className="grid grid-2" style={{ marginTop: "1rem" }}>
-        {lanes.map((lane) => (
-          <ControlCenterLaneCard key={lane.key} title={lane.title} items={model[lane.key]} empty={lane.empty} />
-        ))}
-      </div>
+      {visibleLanes.length === 0 ? (
+        <p className="empty" style={{ marginTop: "1rem" }}>Queue is clear — no active, waiting, attention, failed, or recently completed items.</p>
+      ) : (
+        <div className="control-center-lanes">
+          {visibleLanes.map((lane) => (
+            <ControlCenterLaneCard
+              key={lane.key}
+              title={lane.title}
+              items={model[lane.key]}
+              empty={lane.empty}
+              limit={lane.key === "recentlyCompleted" ? 2 : 3}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -261,63 +255,57 @@ function ControlCenterSummaryStat({
   );
 }
 
-function ControlCenterLaneCard({ title, items, empty }: { title: string; items: ControlCenterItem[]; empty: string }) {
+function ControlCenterLaneCard({
+  title,
+  items,
+  empty,
+  limit = 3,
+}: {
+  title: string;
+  items: ControlCenterItem[];
+  empty: string;
+  limit?: number;
+}) {
   return (
-    <div className="card">
-      <div style={{ display: "flex", justifyContent: "space-between", gap: "0.75rem", alignItems: "baseline" }}>
-        <h3>{title}</h3>
+    <section className="control-center-lane">
+      <div className="control-center-lane-head">
+        <h4>{title}</h4>
         <span className="badge neutral">{items.length}</span>
       </div>
       {items.length === 0 ? (
         <p className="empty">{empty}</p>
       ) : (
-        <div style={{ display: "grid", gap: "0.75rem", marginTop: "0.75rem" }}>
-          {items.slice(0, 5).map((item) => (
-            <ControlCenterWorkCard key={item.id} item={item} />
+        <div className="control-center-lane-list">
+          {items.slice(0, limit).map((item) => (
+            <ControlCenterWorkRow key={item.id} item={item} />
           ))}
         </div>
       )}
-    </div>
+    </section>
   );
 }
 
-function ControlCenterWorkCard({ item }: { item: ControlCenterItem }) {
+function ControlCenterWorkRow({ item }: { item: ControlCenterItem }) {
   const primaryLink = item.links.task ?? item.links.session ?? item.links.agent ?? item.links.approval ?? item.links.timeline;
   const lastUpdated = item.updatedAt ?? item.completedAt ?? item.startedAt;
-  const title = primaryLink ? <Link to={primaryLink}>{item.title}</Link> : item.title;
+  const title = formatItemTitle(item.title);
 
   return (
-    <div style={{ borderTop: "1px solid var(--border)", paddingTop: "0.75rem" }}>
-      <div style={{ display: "flex", gap: "0.5rem", alignItems: "baseline", justifyContent: "space-between" }}>
-        <strong>{title}</strong>
-        <span className={`badge ${badgeClassForTone(item.tone)}`}>{item.status}</span>
-      </div>
-      {item.summary ? <div className="stat-label">{item.summary}</div> : null}
-      <div className="stat-label">
-        {item.agentLabel ?? "Unknown agent"}
-        {item.sessionLabel ? ` · ${item.sessionLabel}` : ""}
-        {lastUpdated ? ` · updated ${formatAge(lastUpdated)}` : ""}
-      </div>
-      <div className="stat-label">Next: {item.nextAction}</div>
-      {item.operatorActions?.length ? <OperatorActionChips actions={item.operatorActions} /> : null}
-    </div>
-  );
-}
-
-function OperatorActionChips({ actions }: { actions: OperatorAction[] }) {
-  const visible = actions.filter((action) => action.enabled || action.kind !== "navigation").slice(0, 5);
-  if (visible.length === 0) return null;
-  return (
-    <div className="operator-action-chips" aria-label="Safe action affordances">
-      {visible.map((action) =>
-        action.enabled && action.href ? (
-          <Link key={action.id} className="operator-action-chip" to={action.href}>{action.label}</Link>
+    <div className="control-center-item-row">
+      <span className={`badge ${badgeClassForTone(item.tone)}`}>{item.status}</span>
+      <div className="control-center-item-main">
+        {primaryLink ? (
+          <Link className="control-center-item-title" to={primaryLink} title={item.title}>{title}</Link>
         ) : (
-          <span key={action.id} className="operator-action-chip operator-action-chip-disabled" title={action.disabledReason ?? "Action unavailable"}>
-            {action.label} unavailable: {action.disabledReason ?? "missing backend action metadata"}
-          </span>
-        ),
-      )}
+          <span className="control-center-item-title">{title}</span>
+        )}
+        {item.summary ? <div className="control-center-item-summary text-clamp-2">{item.summary}</div> : null}
+        <div className="control-center-item-meta text-clip">
+          {item.agentLabel ?? "Unknown agent"}
+          {item.sessionLabel ? ` · ${item.sessionLabel}` : ""}
+          {lastUpdated ? ` · ${formatAge(lastUpdated)}` : ""}
+        </div>
+      </div>
     </div>
   );
 }
@@ -347,133 +335,9 @@ function RuntimeStateCard({
   );
 }
 
-function InterventionCard({ model }: { model: ReturnType<typeof buildDashboardModel>["interventionSummary"] }) {
-  return (
-    <div className="card" style={{ marginBottom: "1.5rem" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "flex-start" }}>
-        <div>
-          <h3>Intervention / Access / Security</h3>
-          <p className="stat-label" style={{ marginTop: "0.35rem" }}>
-            Unified read-only view of runtime items that may need operator attention.
-          </p>
-        </div>
-        <span className={`badge ${badgeClassForTone(model.tone)}`}>{model.headline}</span>
-      </div>
-      <div className="grid grid-4" style={{ marginTop: "1rem", marginBottom: "1rem" }}>
-        <div>
-          <div className="stat-value">{model.counts.total}</div>
-          <div className="stat-label">total items</div>
-        </div>
-        <div>
-          <div className="stat-value">{model.counts.intervention}</div>
-          <div className="stat-label">intervention</div>
-        </div>
-        <div>
-          <div className="stat-value">{model.counts.access}</div>
-          <div className="stat-label">access</div>
-        </div>
-        <div>
-          <div className="stat-value">{model.counts.security}</div>
-          <div className="stat-label">security</div>
-        </div>
-      </div>
-      {model.items.length === 0 ? (
-        <p className="empty">No failed, stale, disconnected, approval, or posture warnings detected.</p>
-      ) : (
-        <table className="table">
-          <thead>
-            <tr><th>Priority</th><th>Category</th><th>Item</th><th>When</th></tr>
-          </thead>
-          <tbody>
-            {model.items.slice(0, 8).map((item) => (
-              <tr key={item.id}>
-                <td><span className={`badge ${badgeClassForTone(item.tone)}`}>{item.tone}</span></td>
-                <td>{item.category}</td>
-                <td>
-                  {item.links.task ? <Link to={item.links.task}>{item.title}</Link> : item.links.approval ? <Link to={item.links.approval}>{item.title}</Link> : item.title}
-                  {item.summary ? <div className="stat-label">{item.summary}</div> : null}
-                </td>
-                <td>{item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : "—"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </div>
-  );
-}
-
-function WorkGraphCard({ graph }: { graph: WorkGraphModel }) {
-  const roots = graph.roots.filter((node) => node.kind === "agent" || node.children.length > 0).slice(0, 8);
-
-  return (
-    <div id="work-graph" className="card" style={{ marginBottom: "1.5rem" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "baseline" }}>
-        <h3>Live work graph</h3>
-        <div className="stat-label">
-          {graph.summary.active} active · {graph.summary.failed} failed · {graph.summary.lost} lost
-        </div>
-      </div>
-      {roots.length === 0 ? (
-        <p className="empty">No live agent work reported</p>
-      ) : (
-        <div style={{ display: "grid", gap: "0.65rem" }}>
-          {roots.map((node) => (
-            <WorkGraphNodeRow key={node.id} node={node} depth={0} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function WorkGraphNodeRow({ node, depth }: { node: WorkGraphNode; depth: number }) {
-  return (
-    <div>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "0.65rem",
-          paddingLeft: `${depth * 1.25}rem`,
-        }}
-      >
-        <span className={`badge ${badgeClassForStatus(node.status)}`}>{node.status}</span>
-        <span className="mono" style={{ color: "var(--ink-muted)", minWidth: "5.5rem" }}>
-          {node.role}
-        </span>
-        {node.links.task ? (
-          <strong><Link to={node.links.task}>{node.label}</Link></strong>
-        ) : node.links.session ? (
-          <strong><Link to={node.links.session}>{node.label}</Link></strong>
-        ) : node.links.agent ? (
-          <strong><Link to={node.links.agent}>{node.label}</Link></strong>
-        ) : (
-          <strong>{node.label}</strong>
-        )}
-        {node.currentTool ? <span className="stat-label">· {node.currentTool}</span> : null}
-      </div>
-      {node.children.length > 0 ? (
-        <div style={{ display: "grid", gap: "0.4rem", marginTop: "0.4rem" }}>
-          {node.children.slice(0, 8).map((child) => (
-            <WorkGraphNodeRow key={child.id} node={child} depth={depth + 1} />
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 function badgeClassForRuntimeTone(tone: ReturnType<typeof buildDashboardModel>["runtimeStatus"]["tone"]): "ok" | "error" | "warn" | "neutral" {
   if (tone === "ok") return "ok";
   return badgeClassForTone(tone);
-}
-
-function badgeClassForStatus(status: WorkGraphStatus): "ok" | "error" | "warn" | "neutral" {
-  if (status === "failed" || status === "lost") return "error";
-  if (status === "active" || status === "running" || status === "scheduled") return "ok";
-  if (status === "queued") return "warn";
-  return "neutral";
 }
 
 function badgeClassForTone(tone: AttentionTone | "ok"): "ok" | "error" | "warn" | "neutral" {
