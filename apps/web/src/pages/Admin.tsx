@@ -40,16 +40,20 @@ export function AdminPage() {
   };
 
   return (
-    <>
-      <h1 className="page-title">Admin Console</h1>
-      <p style={{ color: "var(--text-muted)", marginTop: 0 }}>
-        Guarded RPC proxy to the OpenClaw Gateway. High-risk actions require confirmation and are audit-logged.
-      </p>
+    <div className="page-shell admin-page">
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Admin Console</h1>
+          <p className="page-subtitle">
+            Guarded RPC proxy to the OpenClaw Gateway. High-risk actions require confirmation and are audit-logged.
+          </p>
+        </div>
+      </div>
 
-      <div className="grid grid-2">
+      <div className="grid grid-2 admin-grid">
         <div className="card">
           <h3>Quick Actions</h3>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+          <div className="admin-action-row">
             {QUICK_ACTIONS.map((a) => (
               <button
                 key={a.method}
@@ -63,34 +67,34 @@ export function AdminPage() {
             ))}
           </div>
 
-          <h3 style={{ marginTop: "1.5rem" }}>Custom RPC</h3>
+          <h3 className="admin-section-title">Custom RPC</h3>
           <input
+            className="form-input"
             value={method}
             onChange={(e) => setMethod(e.target.value)}
             placeholder="method"
-            style={{ width: "100%", padding: "0.5rem", marginBottom: "0.5rem", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-elevated)", color: "var(--text)" }}
           />
           <textarea
             value={params}
             onChange={(e) => setParams(e.target.value)}
             rows={4}
-            className="mono"
-            style={{ width: "100%", padding: "0.5rem", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-elevated)", color: "var(--text)" }}
+            className="form-input mono"
           />
-          <button className="btn primary" type="button" disabled={busy} style={{ marginTop: "0.5rem" }} onClick={() => {
-            try {
-              void runRpc(method, JSON.parse(params) as Record<string, unknown>);
-            } catch {
-              setResult("Invalid JSON params");
-            }
-          }}>
+          <button
+            className="btn primary"
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              try {
+                void runRpc(method, JSON.parse(params) as Record<string, unknown>);
+              } catch {
+                setResult("Invalid JSON params");
+              }
+            }}
+          >
             Execute
           </button>
-          {result && (
-            <pre className="mono" style={{ marginTop: "1rem", overflow: "auto", maxHeight: "30vh", whiteSpace: "pre-wrap" }}>
-              {result}
-            </pre>
-          )}
+          {result ? <pre className="mono code-preview code-preview-short">{result}</pre> : null}
         </div>
 
         <div className="card">
@@ -106,7 +110,7 @@ export function AdminPage() {
                 {audit.map((e) => (
                   <tr key={e.id}>
                     <td>{new Date(e.timestamp).toLocaleTimeString()}</td>
-                    <td className="mono">{e.method}</td>
+                    <td className="mono text-clip">{e.method}</td>
                     <td><span className={`badge ${e.success ? "ok" : "error"}`}>{e.success ? "ok" : "fail"}</span></td>
                   </tr>
                 ))}
@@ -115,6 +119,6 @@ export function AdminPage() {
           )}
         </div>
       </div>
-    </>
+    </div>
   );
 }
