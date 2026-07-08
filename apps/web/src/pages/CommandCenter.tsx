@@ -224,12 +224,39 @@ function ControlCenterOverviewCard({
             Active work and operator action queue. <Link to="#work-graph">View lineage / graph</Link>
           </p>
         </div>
+        <span className={`badge ${model.summary.operatorQueue > 0 ? "warn" : "ok"}`}>
+          {model.summary.operatorQueue} need operator
+        </span>
+      </div>
+      <div className="control-center-summary" aria-label="Control Center summary">
+        <ControlCenterSummaryStat label="active" value={model.summary.activeNow} tone={model.summary.activeNow > 0 ? "ok" : "neutral"} />
+        <ControlCenterSummaryStat label="waiting" value={model.summary.waitingOnMe} tone={model.summary.waitingOnMe > 0 ? "warn" : "neutral"} />
+        <ControlCenterSummaryStat label="attention" value={model.summary.attention} tone={model.summary.attention > 0 ? "warn" : "neutral"} />
+        <ControlCenterSummaryStat label="failed" value={model.summary.failedRecoverable} tone={model.summary.failedRecoverable > 0 ? "error" : "neutral"} />
+        <ControlCenterSummaryStat label="completed" value={model.summary.recentlyCompleted} tone="neutral" />
       </div>
       <div className="grid grid-2" style={{ marginTop: "1rem" }}>
         {lanes.map((lane) => (
           <ControlCenterLaneCard key={lane.key} title={lane.title} items={model[lane.key]} empty={lane.empty} />
         ))}
       </div>
+    </div>
+  );
+}
+
+function ControlCenterSummaryStat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: "ok" | "warn" | "error" | "neutral";
+}) {
+  return (
+    <div className={`control-center-summary-stat control-center-summary-stat-${tone}`}>
+      <strong>{value}</strong>
+      <span>{label}</span>
     </div>
   );
 }

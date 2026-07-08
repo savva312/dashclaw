@@ -1851,6 +1851,46 @@ textarea {
   background: transparent;
 }
 
+.control-center-summary {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  margin-top: 1rem;
+}
+
+.control-center-summary-stat {
+  background: color-mix(in srgb, var(--bg-elevated) 72%, transparent);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 12px;
+  display: grid;
+  gap: 0.15rem;
+  padding: 0.75rem 0.85rem;
+}
+
+.control-center-summary-stat strong {
+  font-size: 1.45rem;
+  line-height: 1;
+}
+
+.control-center-summary-stat span {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.control-center-summary-stat-ok {
+  border-left-color: var(--ok);
+}
+
+.control-center-summary-stat-warn {
+  border-left-color: var(--warn);
+}
+
+.control-center-summary-stat-error {
+  border-left-color: var(--error);
+}
+
 .operator-action-chips {
   display: flex;
   flex-wrap: wrap;
