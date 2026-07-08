@@ -317,6 +317,18 @@ describe("dashboard selectors", () => {
     });
     expect(model.attention.filter((item) => item.kind === "task-failed")).toHaveLength(2);
     expect(model.attention.some((item) => item.kind === "long-running-task" && item.task?.id === "task-release")).toBe(true);
+    expect(model.controlCenter.summary).toMatchObject({
+      activeNow: 2,
+      waitingOnMe: 3,
+      failedRecoverable: 2,
+      operatorQueue: model.controlCenter.waitingOnMe.length + model.controlCenter.attention.length + model.controlCenter.failedRecoverable.length,
+      totalVisible:
+        model.controlCenter.activeNow.length +
+        model.controlCenter.waitingOnMe.length +
+        model.controlCenter.attention.length +
+        model.controlCenter.failedRecoverable.length +
+        model.controlCenter.recentlyCompleted.length,
+    });
     expect(model.controlCenter.activeNow.map((item) => item.id)).toEqual(["task:task-release", "task:task-subagent-selectors"]);
     expect(model.controlCenter.waitingOnMe.map((item) => item.id)).toEqual([
       "approval:approval-plugin",
