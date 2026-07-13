@@ -21,6 +21,48 @@ describe("gateway session normalization", () => {
     expect(idle.isActive).toBe(false);
   });
 
+  it("preserves only explicit Gateway worktree metadata", () => {
+    const worktreeSession = gatewayBridgeTestUtils.normalizeSession({
+      key: "agent:coder:subagent:task-040",
+      spawnedCwd: "/workspace/.worktrees/task-040",
+      worktree: {
+        id: "task-040",
+        branch: "agent/task-040",
+        repoRoot: "/workspace/dashclaw",
+      },
+    });
+    expect(worktreeSession.worktree).toEqual({
+      id: "task-040",
+      path: "/workspace/.worktrees/task-040",
+      branch: "agent/task-040",
+      repoRoot: "/workspace/dashclaw",
+    });
+
+    const futurePath = gatewayBridgeTestUtils.normalizeSession({
+      key: "agent:coder:subagent:future",
+      spawnedCwd: "/wrong/fallback",
+      worktree: { path: "/gateway/reported/worktree" },
+    });
+    expect(futurePath.worktree?.path).toBe("/gateway/reported/worktree");
+
+    const missingPath = gatewayBridgeTestUtils.normalizeSession({
+      key: "agent:coder:subagent:missing-path",
+      worktree: { branch: "agent/missing-path" },
+    });
+    expect(missingPath.worktree).toEqual({
+      id: undefined,
+      path: undefined,
+      branch: "agent/missing-path",
+      repoRoot: undefined,
+    });
+
+    const ordinarySession = gatewayBridgeTestUtils.normalizeSession({
+      key: "agent:coder:main",
+      spawnedCwd: "/workspace/dashclaw",
+    });
+    expect(ordinarySession.worktree).toBeUndefined();
+  });
+
   it("tracks live session activity from session.message events", () => {
     const tracker = gatewayBridgeTestUtils.createLiveSessionTracker();
     const key = "agent:evolve-monorepo:discord:channel:1505558029129744436";
@@ -65,5 +107,114 @@ describe("gateway session normalization", () => {
       },
     ]);
     expect(idleSessions[0]?.isActive).toBe(false);
+  });
+});
+
+describe("assistant stream accumulation", () => {
+  it("coalesces delta and cumulative chunks under one stable timeline id", () => {
+    const streams = gatewayBridgeTestUtils.createAssistantStreamAccumulator();
+    const base = { sessionKey: "session-a", runId: "run-a", messageId: "message-a" };
+    const first = streams.consume("chat", { ...base, state: "delta", deltaText: "H" });
+    const second = streams.consume("chat", { ...base, state: "delta", text: "He" });
+    const third = streams.consume("chat", { ...base, state: "delta", deltaText: "llo" });
+    const final = streams.consume("chat", { ...base, state: "final", text: "Hello" });
+
+    expect([first?.timelineId, second?.timelineId, third?.timelineId, final?.timelineId]).toEqual([
+      first?.timelineId,
+      first?.timelineId,
+      first?.timelineId,
+      first?.timelineId,
+    ]);
+    expect(final).toMatchObject({ text: "Hello", terminal: true, sessionKey: "session-a" });
+  });
+
+  it("keeps concurrent sessions and response ids isolated and resets after final", () => {
+    const streams = gatewayBridgeTestUtils.createAssistantStreamAccumulator();
+    const a = streams.consume("agent", {
+      stream: "assistant",
+      sessionKey: "session-a",
+      responseId: "response-a",
+      data: { delta: "Alpha" },
+    });
+    const b = streams.consume("agent", {
+      stream: "assistant",
+      sessionKey: "session-b",
+      responseId: "response-b",
+      data: { text: "Beta" },
+    });
+    const finalA = streams.consume("agent", {
+      stream: "assistant",
+      sessionKey: "session-a",
+      responseId: "response-a",
+      phase: "done",
+      data: { text: "Alpha done" },
+    });
+    const restartedA = streams.consume("agent", {
+      stream: "assistant",
+      sessionKey: "session-a",
+      responseId: "response-a",
+      data: { delta: "New" },
+    });
+
+    expect(a?.text).toBe("Alpha");
+    expect(b?.text).toBe("Beta");
+    expect(a?.timelineId).not.toBe(b?.timelineId);
+    expect(finalA?.text).toBe("Alpha done");
+    expect(restartedA?.timelineId).not.toBe(finalA?.timelineId);
+    expect(restartedA?.text).toBe("New");
+  });
+
+  it("keeps one response across an interleaved completed tool event", () => {
+    const streams = gatewayBridgeTestUtils.createAssistantStreamAccumulator();
+    const base = { sessionKey: "session-a", runId: "run-a", messageId: "message-a" };
+    const first = streams.consume("chat", { ...base, state: "delta", deltaText: "I’m checking " });
+
+    expect(
+      streams.consume("session.tool", {
+        ...base,
+        toolName: "read",
+        phase: "completed",
+      }),
+    ).toBeNull();
+
+    const second = streams.consume("chat", { ...base, state: "delta", deltaText: "the runtime now." });
+    const final = streams.consume("chat", {
+      ...base,
+      state: "final",
+      text: "I’m checking the runtime now.",
+    });
+
+    expect(second?.timelineId).toBe(first?.timelineId);
+    expect(final?.timelineId).toBe(first?.timelineId);
+    expect(final?.text).toBe("I’m checking the runtime now.");
+  });
+
+  it("does not mistake a delta suffix for a cumulative response", () => {
+    const streams = gatewayBridgeTestUtils.createAssistantStreamAccumulator();
+    const base = { sessionKey: "session-a", runId: "run-a", messageId: "message-a" };
+
+    streams.consume("chat", { ...base, state: "delta", deltaText: "a" });
+    const update = streams.consume("chat", { ...base, state: "delta", deltaText: "data" });
+
+    expect(update?.text).toBe("adata");
+  });
+
+  it("finalizes an outstanding response at a terminal session boundary", () => {
+    const streams = gatewayBridgeTestUtils.createAssistantStreamAccumulator();
+    const base = { sessionKey: "session-a", runId: "run-a", messageId: "message-a" };
+    const streaming = streams.consume("chat", { ...base, state: "delta", deltaText: "Complete answer" });
+    const completed = streams.finalizeBoundary("session.message", {
+      sessionKey: "session-a",
+      status: "done",
+    });
+
+    expect(completed).toEqual([
+      expect.objectContaining({
+        timelineId: streaming?.timelineId,
+        text: "Complete answer",
+        terminal: true,
+      }),
+    ]);
+    expect(streams.finalizeBoundary("session.message", { sessionKey: "session-a", status: "done" })).toEqual([]);
   });
 });

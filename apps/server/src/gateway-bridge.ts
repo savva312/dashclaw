@@ -36,6 +36,7 @@ export class GatewayBridge {
   private refreshQueued = false;
   private debouncedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private liveSessions = new Map<string, LiveSessionActivity>();
+  private assistantStreams = new AssistantStreamAccumulator();
   private onSnapshot?: (snapshot: RuntimeSnapshot) => void;
   private onTimeline?: (event: ReturnType<RuntimeStore["appendTimeline"]>) => void;
 
@@ -70,6 +71,7 @@ export class GatewayBridge {
       this.connectionState = "disconnected";
       this.subscribedSessions.clear();
       this.liveSessions.clear();
+      this.assistantStreams.clear();
       this.snapshot = { ...this.snapshot, connectionState: "disconnected", updatedAt: new Date().toISOString() };
       this.publishSnapshot();
       this.recordTimeline("gateway.disconnected", "Gateway disconnected", reason, "warn");
@@ -111,6 +113,7 @@ export class GatewayBridge {
     this.stopped = true;
     this.stopRefreshLoop();
     if (this.debouncedRefreshTimer) clearTimeout(this.debouncedRefreshTimer);
+    this.assistantStreams.clear();
     this.client.disconnect();
   }
 
@@ -259,16 +262,24 @@ export class GatewayBridge {
     const kind = mapEventKind(name, p);
     if (!kind) return;
 
-    const title = buildEventTitle(name, p);
-    const summary = buildEventSummary(name, p);
+    const assistant = this.assistantStreams.consume(name, p);
+    if (assistant) {
+      this.recordAssistantTimeline(assistant);
+    } else if (!isAssistantTransportEvent(name, p)) {
+      for (const completed of this.assistantStreams.finalizeBoundary(name, p)) {
+        this.recordAssistantTimeline(completed);
+      }
+      const title = buildEventTitle(name, p);
+      const summary = buildEventSummary(name, p);
 
-    this.recordTimeline(kind, title, summary, undefined, {
-      agentId: pickString(p, "agentId"),
-      sessionKey: pickString(p, "sessionKey", "key"),
-      runId: pickString(p, "runId"),
-      taskId: pickString(p, "taskId"),
-      payload: redactValue(p) as Record<string, unknown>,
-    });
+      this.recordTimeline(kind, title, summary, undefined, {
+        agentId: pickString(p, "agentId"),
+        sessionKey: resolveSessionKey(p),
+        runId: pickString(p, "runId"),
+        taskId: pickString(p, "taskId"),
+        payload: redactValue(p) as Record<string, unknown>,
+      });
+    }
 
     const liveChanged = this.updateLiveSessionFromEvent(name, p);
     if (liveChanged) {
@@ -316,6 +327,30 @@ export class GatewayBridge {
         runId: extra?.runId,
         taskId: extra?.taskId,
         payload: extra?.payload,
+      });
+      this.onTimeline?.(event);
+    } catch {
+      /* store may be closed during shutdown */
+    }
+  }
+
+  private recordAssistantTimeline(update: AssistantStreamUpdate): void {
+    if (this.stopped) return;
+    try {
+      const event = this.store.upsertTimeline({
+        id: update.timelineId,
+        kind: update.kind,
+        timestamp: update.timestamp,
+        title: update.terminal ? "Assistant response" : "Assistant responding",
+        summary: redactValue(update.text, MAX_ASSISTANT_TEXT) as string,
+        agentId: update.agentId,
+        sessionKey: update.sessionKey,
+        runId: update.runId,
+        taskId: update.taskId,
+        payload: redactValue({
+          responseId: update.responseId,
+          streaming: !update.terminal,
+        }) as Record<string, unknown>,
       });
       this.onTimeline?.(event);
     } catch {
@@ -412,6 +447,18 @@ function normalizeSession(raw: unknown): SessionSummary {
     subagentRunState === "running" ||
     subagentRunState === "active" ||
     Boolean(s.isActive);
+  const rawWorktree =
+    s.worktree && typeof s.worktree === "object" && !Array.isArray(s.worktree)
+      ? (s.worktree as Record<string, unknown>)
+      : undefined;
+  const worktree = rawWorktree
+    ? {
+        id: pickString(rawWorktree, "id"),
+        path: pickString(rawWorktree, "path") ?? pickString(s, "spawnedCwd"),
+        branch: pickString(rawWorktree, "branch"),
+        repoRoot: pickString(rawWorktree, "repoRoot"),
+      }
+    : undefined;
 
   return {
     key,
@@ -428,6 +475,7 @@ function normalizeSession(raw: unknown): SessionSummary {
     isActive,
     currentRunId: pickString(s, "runId", "currentRunId"),
     currentTool: pickString(s, "currentTool"),
+    worktree,
   };
 }
 
@@ -587,6 +635,198 @@ function pickString(obj: Record<string, unknown>, ...keys: string[]): string | u
   return undefined;
 }
 
+const MAX_ASSISTANT_TEXT = 50_000;
+const MAX_ASSISTANT_STREAMS = 100;
+
+interface AssistantStreamState {
+  timelineId: string;
+  timestamp: string;
+  text: string;
+  sessionKey: string;
+  runId?: string;
+  responseId?: string;
+  agentId?: string;
+  taskId?: string;
+  kind: "chat" | "agent.assistant";
+}
+
+interface AssistantStreamUpdate extends AssistantStreamState {
+  terminal: boolean;
+}
+
+class AssistantStreamAccumulator {
+  private streams = new Map<string, AssistantStreamState>();
+  private activeResponseByScope = new Map<string, string>();
+
+  consume(name: string, payload: Record<string, unknown>): AssistantStreamUpdate | null {
+    const sessionKey = resolveSessionKey(payload);
+    if (!sessionKey) return null;
+
+    if (!isAssistantTransportEvent(name, payload)) return null;
+
+    const runId = pickNestedString(payload, "runId") ?? pickString(payload, "runId");
+    const responseId = pickNestedString(payload, "responseId", "messageId", "id");
+    const scope = `${sessionKey}\u0000run:${runId ?? "current"}`;
+    const key = responseId
+      ? `${sessionKey}\u0000response:${responseId}`
+      : scope;
+    if (responseId) {
+      const previousKey = this.activeResponseByScope.get(scope);
+      if (previousKey && previousKey !== key) this.streams.delete(previousKey);
+      this.streams.delete(scope);
+      this.activeResponseByScope.set(scope, key);
+    }
+    const terminal = isTerminalBoundary(name, payload);
+    const chunk = extractAssistantText(payload);
+    const existing = this.streams.get(key);
+
+    if (!chunk && !existing) return null;
+
+    const state: AssistantStreamState = existing ?? {
+      timelineId: randomUUID(),
+      timestamp: new Date().toISOString(),
+      text: "",
+      sessionKey,
+      runId,
+      responseId,
+      agentId: pickString(payload, "agentId"),
+      taskId: pickString(payload, "taskId"),
+      kind: name === "chat" ? "chat" : "agent.assistant",
+    };
+
+    if (chunk) state.text = mergeAssistantText(state.text, chunk).slice(0, MAX_ASSISTANT_TEXT);
+    if (!state.text) {
+      if (terminal) this.streams.delete(key);
+      return null;
+    }
+
+    if (terminal) {
+      this.streams.delete(key);
+      if (this.activeResponseByScope.get(scope) === key) this.activeResponseByScope.delete(scope);
+    } else {
+      this.streams.set(key, state);
+      this.evictOldest();
+    }
+    return { ...state, terminal };
+  }
+
+  finalizeBoundary(name: string, payload: Record<string, unknown>): AssistantStreamUpdate[] {
+    const sessionKey = resolveSessionKey(payload);
+    if (!sessionKey || !isAssistantSessionTerminalBoundary(name, payload)) return [];
+
+    const completed: AssistantStreamUpdate[] = [];
+    for (const [key, state] of this.streams) {
+      if (state.sessionKey !== sessionKey) continue;
+      completed.push({ ...state, terminal: true });
+      this.streams.delete(key);
+    }
+    for (const scope of this.activeResponseByScope.keys()) {
+      if (scope.startsWith(`${sessionKey}\u0000`)) this.activeResponseByScope.delete(scope);
+    }
+    return completed;
+  }
+
+  clear(): void {
+    this.streams.clear();
+    this.activeResponseByScope.clear();
+  }
+
+  private evictOldest(): void {
+    while (this.streams.size > MAX_ASSISTANT_STREAMS) {
+      const oldest = this.streams.keys().next().value as string | undefined;
+      if (!oldest) return;
+      this.streams.delete(oldest);
+    }
+  }
+}
+
+function isAssistantTransportEvent(name: string, payload: Record<string, unknown>): boolean {
+  if (name === "agent") return pickString(payload, "stream") === "assistant";
+  if (name !== "chat") return false;
+  const role = pickNestedString(payload, "role");
+  return role !== "user" && role !== "tool";
+}
+
+function extractAssistantText(payload: Record<string, unknown>): string | undefined {
+  const direct = pickString(payload, "deltaText", "delta", "text", "content");
+  if (direct) return direct;
+
+  for (const key of ["message", "data", "chunk", "response"]) {
+    const nested = payload[key];
+    if (!nested || typeof nested !== "object" || Array.isArray(nested)) continue;
+    const text = extractAssistantText(nested as Record<string, unknown>);
+    if (text) return text;
+  }
+
+  for (const key of ["content", "parts"]) {
+    const blocks = payload[key];
+    if (!Array.isArray(blocks)) continue;
+    const text = blocks
+      .filter((block): block is Record<string, unknown> => Boolean(block) && typeof block === "object")
+      .filter((block) => block.type === undefined || block.type === "text" || block.type === "output_text")
+      .map((block) => pickString(block, "text", "content", "delta") ?? "")
+      .join("");
+    if (text) return text;
+  }
+  return undefined;
+}
+
+function pickNestedString(payload: Record<string, unknown>, ...keys: string[]): string | undefined {
+  const direct = pickString(payload, ...keys);
+  if (direct) return direct;
+  for (const container of ["message", "data", "chunk", "response"]) {
+    const nested = payload[container];
+    if (!nested || typeof nested !== "object" || Array.isArray(nested)) continue;
+    const value = pickString(nested as Record<string, unknown>, ...keys);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function mergeAssistantText(current: string, incoming: string): string {
+  if (!current) return incoming;
+  if (!incoming || current === incoming || current.endsWith(incoming)) return current;
+  if (incoming.startsWith(current)) return incoming;
+
+  const overlapLimit = Math.min(current.length, incoming.length);
+  for (let overlap = overlapLimit; overlap > 0; overlap -= 1) {
+    if (current.endsWith(incoming.slice(0, overlap))) {
+      return current + incoming.slice(overlap);
+    }
+  }
+  return current + incoming;
+}
+
+function isAssistantSessionTerminalBoundary(name: string, payload: Record<string, unknown>): boolean {
+  if (name === "shutdown") return true;
+  if (name === "session.message" || name === "sessions.changed") {
+    return isTerminalBoundary(name, payload);
+  }
+  return name === "agent" && pickString(payload, "stream") === "lifecycle" && isTerminalBoundary(name, payload);
+}
+
+function isTerminalBoundary(name: string, payload: Record<string, unknown>): boolean {
+  const state = pickNestedString(payload, "state", "status", "phase", "event");
+  if (!state) return name === "shutdown";
+  return new Set([
+    "final",
+    "done",
+    "completed",
+    "complete",
+    "failed",
+    "error",
+    "timeout",
+    "timed_out",
+    "cancelled",
+    "canceled",
+    "aborted",
+    "end",
+    "ended",
+    "stop",
+    "stopped",
+  ]).has(state.toLowerCase());
+}
+
 interface LiveSessionActivity {
   agentId?: string;
   status: "running" | "done" | "failed" | "timeout";
@@ -723,6 +963,8 @@ function applyLiveSessions(
 
 export const gatewayBridgeTestUtils = {
   normalizeSession,
+  mergeAssistantText,
+  createAssistantStreamAccumulator: () => new AssistantStreamAccumulator(),
   createLiveSessionTracker: () => {
     const liveSessions = new Map<string, LiveSessionActivity>();
     return {

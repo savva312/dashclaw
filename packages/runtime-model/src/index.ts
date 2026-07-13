@@ -50,6 +50,13 @@ export interface AgentSummary {
   workspace?: string;
 }
 
+export interface SessionWorktreeSummary {
+  id?: string;
+  path?: string;
+  branch?: string;
+  repoRoot?: string;
+}
+
 export interface SessionSummary {
   key: string;
   agentId?: string;
@@ -65,6 +72,7 @@ export interface SessionSummary {
   isActive?: boolean;
   currentRunId?: string;
   currentTool?: string;
+  worktree?: SessionWorktreeSummary;
 }
 
 export interface TaskSummary {

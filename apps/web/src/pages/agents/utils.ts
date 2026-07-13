@@ -5,6 +5,7 @@ export interface AgentOfficeStats {
   sessions: SessionSummary[];
   activeSessions: SessionSummary[];
   activeTask?: TaskSummary;
+  primarySession?: SessionSummary;
   isWorking: boolean;
   currentLabel?: string;
   currentTool?: string;
@@ -22,24 +23,31 @@ export function groupSessionsByAgent(snapshot: RuntimeSnapshot): Map<string, Ses
 }
 
 export function buildAgentStats(snapshot: RuntimeSnapshot, agent: AgentSummary): AgentOfficeStats {
-  const sessions = groupSessionsByAgent(snapshot).get(agent.id) ?? [];
+  const sessions = sortSessions(groupSessionsByAgent(snapshot).get(agent.id) ?? []);
   const activeSessions = sessions.filter((s) => s.isActive);
-  const activeTask = snapshot.tasks.find((t) => t.agentId === agent.id && t.status === "running");
-  const primarySession = activeSessions[0];
+  const runningTasks = snapshot.tasks.filter((task) => task.agentId === agent.id && task.status === "running");
+  const activeTask =
+    runningTasks.find((task) => activeSessions.some((session) => session.key === task.sessionKey)) ??
+    runningTasks[0];
+  const taskSession = activeTask?.sessionKey
+    ? activeSessions.find((session) => session.key === activeTask.sessionKey)
+    : undefined;
+  const primarySession = taskSession ?? activeSessions[0];
   const isWorking = activeSessions.length > 0 || Boolean(activeTask);
 
   return {
     agent,
-    sessions: sortSessions(sessions),
+    sessions,
     activeSessions,
     activeTask,
+    primarySession,
     isWorking,
     currentLabel:
       activeTask?.title ??
       activeTask?.id ??
       primarySession?.label ??
       shortSessionKey(primarySession?.key),
-    currentTool: activeSessions.find((s) => s.currentTool)?.currentTool,
+    currentTool: primarySession?.currentTool ?? activeSessions.find((s) => s.currentTool)?.currentTool,
   };
 }
 
@@ -127,7 +135,15 @@ export function matchesQuery(text: string, query: string): boolean {
 
 export function sessionMatchesQuery(session: SessionSummary, query: string): boolean {
   return matchesQuery(
-    [session.label, session.key, session.agentId, session.currentTool, session.status].filter(Boolean).join(" "),
+    [
+      session.label,
+      session.key,
+      session.agentId,
+      session.currentTool,
+      session.status,
+      session.worktree?.branch,
+      session.worktree?.path,
+    ].filter(Boolean).join(" "),
     query,
   );
 }
