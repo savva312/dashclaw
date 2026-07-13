@@ -138,4 +138,36 @@ describe("GatewayClient", () => {
 
     client.disconnect();
   });
+
+  it("serves the real sessions.preview contract and realistic assistant streams", async () => {
+    fake = await startFakeGateway({ token: "test-token" });
+    const client = new GatewayClient({
+      url: fake.url,
+      token: "test-token",
+      reconnect: false,
+      WebSocketImpl: WebSocket as unknown as typeof globalThis.WebSocket,
+    });
+    const events: Array<{ name: string; payload: unknown }> = [];
+    client.on("event", (name, payload) => events.push({ name, payload }));
+    await client.connect();
+
+    const preview = await client.call<{
+      previews: Array<{ key: string; items: Array<{ role: string; text: string }> }>;
+    }>("sessions.preview", { keys: ["agent:main:main"], limit: 20 });
+    expect(preview.previews).toEqual([
+      expect.objectContaining({
+        key: "agent:main:main",
+        items: expect.arrayContaining([
+          expect.objectContaining({ role: "assistant", text: "Preview for Main" }),
+        ]),
+      }),
+    ]);
+
+    fake.emitAssistantSequence();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(events.map((event) => event.name)).toEqual(expect.arrayContaining(["chat", "session.tool"]));
+    expect(events.filter((event) => event.name === "chat")).toHaveLength(3);
+
+    client.disconnect();
+  });
 });

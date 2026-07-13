@@ -47,10 +47,23 @@ export function AgentSessionDetail() {
             event.sessionKey === sessionKey &&
             event.kind !== "health" &&
             event.kind !== "presence" &&
-            event.kind !== "heartbeat",
+            event.kind !== "heartbeat" &&
+            event.kind !== "agent.assistant" &&
+            event.kind !== "chat",
         )
         .slice(-40)
         .reverse(),
+    [timeline, sessionKey],
+  );
+
+  const assistantEvents = useMemo(
+    () =>
+      timeline.filter(
+        (event) =>
+          event.sessionKey === sessionKey &&
+          (event.kind === "agent.assistant" || event.kind === "chat") &&
+          Boolean(event.summary),
+      ),
     [timeline, sessionKey],
   );
 
@@ -151,7 +164,11 @@ export function AgentSessionDetail() {
       <div className={`session-detail-layout ${tab === "events" ? "show-events" : "show-conversation"}`}>
         <Panel className="session-detail-panel session-detail-convo" live={session.isActive}>
           <h3>Conversation</h3>
-          <SessionPreviewPanel sessionKey={session.key} isActive={session.isActive} />
+          <SessionPreviewPanel
+            sessionKey={session.key}
+            isActive={session.isActive}
+            assistantEvents={assistantEvents}
+          />
         </Panel>
 
         <Panel className="session-detail-panel">

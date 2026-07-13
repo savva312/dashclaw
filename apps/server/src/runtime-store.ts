@@ -80,6 +80,30 @@ export class RuntimeStore {
     return row;
   }
 
+  upsertTimeline(event: Omit<TimelineEvent, "id"> & { id: string }): TimelineEvent {
+    const row: TimelineEvent = { ...event };
+    this.db
+      .prepare(
+        `INSERT INTO timeline_events (id, kind, timestamp, title, summary, agent_id, session_key, run_id, task_id, severity, payload)
+         VALUES (@id, @kind, @timestamp, @title, @summary, @agentId, @sessionKey, @runId, @taskId, @severity, @payloadJson)
+         ON CONFLICT(id) DO UPDATE SET
+           kind = excluded.kind,
+           title = excluded.title,
+           summary = excluded.summary,
+           agent_id = excluded.agent_id,
+           session_key = excluded.session_key,
+           run_id = excluded.run_id,
+           task_id = excluded.task_id,
+           severity = excluded.severity,
+           payload = excluded.payload`,
+      )
+      .run({
+        ...row,
+        payloadJson: row.payload ? JSON.stringify(row.payload) : null,
+      });
+    return row;
+  }
+
   listTimeline(limit = 200, kind?: TimelineEventKind): TimelineEvent[] {
     const rows = kind
       ? this.db
