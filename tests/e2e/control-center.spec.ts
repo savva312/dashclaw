@@ -48,7 +48,7 @@ test.describe("Discord workflow browser smoke", () => {
     await page.goto("/agents/fixture-model");
     await expect(page.getByLabel("Worktree context").filter({ hasText: branch }).first()).toContainText(path);
 
-    await page.goto(`/agents/fixture-model/sessions/${encodeURIComponent("agent:fixture-model:subagent:TASK-039-fixture-model-lane")}`);
+    await page.goto(`/agents/fixture-model/sessions/${encodeURIComponent("agent:dashclaw:discord:thread:work-board:subagent:model")}`);
     await expect(page.getByLabel("Worktree context").filter({ hasText: branch })).toContainText(path);
   });
 });

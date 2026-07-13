@@ -359,7 +359,7 @@ function discordWorkflowScenarioData(common: FakeGatewayScenarioData): FakeGatew
   const completedThread = "agent:dashclaw:discord:thread:completed-summary";
   const failedThread = "agent:dashclaw:discord:thread:failed-delivery";
   const archivedThread = "agent:dashclaw:discord:thread:archived-context";
-  const subagentSession = "agent:fixture-model:subagent:TASK-039-fixture-model-lane";
+  const subagentSession = "agent:dashclaw:discord:thread:work-board:subagent:model";
   const acpSession = "agent:coder:acp:TASK-039-coding-lane";
   const missingParentThread = "agent:dashclaw:discord:thread:missing-original";
 
