@@ -412,6 +412,18 @@ function normalizeSession(raw: unknown): SessionSummary {
     subagentRunState === "running" ||
     subagentRunState === "active" ||
     Boolean(s.isActive);
+  const rawWorktree =
+    s.worktree && typeof s.worktree === "object" && !Array.isArray(s.worktree)
+      ? (s.worktree as Record<string, unknown>)
+      : undefined;
+  const worktree = rawWorktree
+    ? {
+        id: pickString(rawWorktree, "id"),
+        path: pickString(rawWorktree, "path") ?? pickString(s, "spawnedCwd"),
+        branch: pickString(rawWorktree, "branch"),
+        repoRoot: pickString(rawWorktree, "repoRoot"),
+      }
+    : undefined;
 
   return {
     key,
@@ -428,6 +440,7 @@ function normalizeSession(raw: unknown): SessionSummary {
     isActive,
     currentRunId: pickString(s, "runId", "currentRunId"),
     currentTool: pickString(s, "currentTool"),
+    worktree,
   };
 }
 

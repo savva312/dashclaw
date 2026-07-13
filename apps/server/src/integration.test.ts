@@ -78,6 +78,12 @@ describe("server integration", () => {
     expect(snapshot.pendingApprovalCount).toBe(1);
     expect(snapshot.sessions.find((session) => session.key === "agent:fixture-model:subagent:TASK-039-fixture-model-lane")).toMatchObject({
       parentSessionKey: "agent:dashclaw:discord:thread:work-board",
+      worktree: {
+        id: "task-039-fixture-model-lane",
+        branch: "agent/task-039-fixture-model-lane",
+        path: "/workspace/.worktrees/task-039-fixture-model-lane",
+        repoRoot: "/workspace/dashclaw",
+      },
     });
     expect(snapshot.tasks.find((task) => task.id === "task-lost-background-result")).toMatchObject({
       status: "timed_out",

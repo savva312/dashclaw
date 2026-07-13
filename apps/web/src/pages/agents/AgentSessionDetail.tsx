@@ -4,6 +4,7 @@ import { useAppState } from "../../context";
 import { SessionPreviewPanel } from "./SessionPreviewPanel";
 import { AgentAvatar } from "./AgentAvatar";
 import { KindChip, StatusChip } from "./Chips";
+import { WorktreeMetadata } from "./WorktreeMetadata";
 import {
   eventKindShort,
   eventKindTone,
@@ -103,6 +104,8 @@ export function AgentSessionDetail() {
         </div>
         <StatusChip label={sessionStatusLabel(session)} tone={sessionStatusTone(session)} pulse={session.isActive} />
       </header>
+
+      <WorktreeMetadata worktree={session.worktree} variant="full" />
 
       <div className="detail-pill-row">
         <div className="detail-pill">

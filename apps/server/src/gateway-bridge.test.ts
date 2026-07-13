@@ -21,6 +21,48 @@ describe("gateway session normalization", () => {
     expect(idle.isActive).toBe(false);
   });
 
+  it("preserves only explicit Gateway worktree metadata", () => {
+    const worktreeSession = gatewayBridgeTestUtils.normalizeSession({
+      key: "agent:coder:subagent:task-040",
+      spawnedCwd: "/workspace/.worktrees/task-040",
+      worktree: {
+        id: "task-040",
+        branch: "agent/task-040",
+        repoRoot: "/workspace/dashclaw",
+      },
+    });
+    expect(worktreeSession.worktree).toEqual({
+      id: "task-040",
+      path: "/workspace/.worktrees/task-040",
+      branch: "agent/task-040",
+      repoRoot: "/workspace/dashclaw",
+    });
+
+    const futurePath = gatewayBridgeTestUtils.normalizeSession({
+      key: "agent:coder:subagent:future",
+      spawnedCwd: "/wrong/fallback",
+      worktree: { path: "/gateway/reported/worktree" },
+    });
+    expect(futurePath.worktree?.path).toBe("/gateway/reported/worktree");
+
+    const missingPath = gatewayBridgeTestUtils.normalizeSession({
+      key: "agent:coder:subagent:missing-path",
+      worktree: { branch: "agent/missing-path" },
+    });
+    expect(missingPath.worktree).toEqual({
+      id: undefined,
+      path: undefined,
+      branch: "agent/missing-path",
+      repoRoot: undefined,
+    });
+
+    const ordinarySession = gatewayBridgeTestUtils.normalizeSession({
+      key: "agent:coder:main",
+      spawnedCwd: "/workspace/dashclaw",
+    });
+    expect(ordinarySession.worktree).toBeUndefined();
+  });
+
   it("tracks live session activity from session.message events", () => {
     const tracker = gatewayBridgeTestUtils.createLiveSessionTracker();
     const key = "agent:evolve-monorepo:discord:channel:1505558029129744436";

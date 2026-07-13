@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import type { SessionSummary } from "@dashclaw/runtime-model";
 import { KindChip, StatusChip } from "./Chips";
+import { WorktreeMetadata } from "./WorktreeMetadata";
 import {
   formatRelativeTime,
   parseSessionKind,
@@ -46,6 +47,8 @@ export function SessionCard({
           <span className="mono">{session.currentTool}</span>
         </div>
       ) : null}
+
+      <WorktreeMetadata worktree={session.worktree} />
 
       <div className="session-card-footer">
         <span>{formatRelativeTime(session.updatedAt ?? session.lastInteractionAt)}</span>

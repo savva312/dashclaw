@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import { useAppState } from "../../context";
 import { AgentCard } from "./AgentCard";
 import { AgentAvatar } from "./AgentAvatar";
+import { WorktreeMetadata } from "./WorktreeMetadata";
 import { agentMatchesQuery, buildAllAgentStats } from "./utils";
 import {
   Badge,
@@ -70,7 +71,7 @@ export function AgentOverview() {
           </div>
           <div className="live-fleet-scroll">
             {working.map((row) => {
-              const session = row.activeSessions[0];
+              const session = row.primarySession;
               const target = session
                 ? `/agents/${encodeURIComponent(row.agent.id)}/sessions/${encodeURIComponent(session.key)}`
                 : `/agents/${encodeURIComponent(row.agent.id)}`;
@@ -80,6 +81,7 @@ export function AgentOverview() {
                   <div>
                     <strong>{row.agent.name ?? row.agent.id}</strong>
                     <span>{row.currentLabel ?? "Working"}</span>
+                    <WorktreeMetadata worktree={session?.worktree} />
                   </div>
                   <Badge tone="live" pulse>
                     live

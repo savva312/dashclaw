@@ -37,4 +37,18 @@ test.describe("Discord workflow browser smoke", () => {
     await expect(page.getByText("Approve once unavailable").first()).toBeVisible();
     await expect(page.getByText("disabled in read-only cockpit until backend action metadata").first()).toBeVisible();
   });
+
+  test("shows explicit worktree branch and path on agent and session surfaces", async ({ page }) => {
+    const branch = "agent/task-039-fixture-model-lane";
+    const path = "/workspace/.worktrees/task-039-fixture-model-lane";
+
+    await page.goto("/agents");
+    await expect(page.getByLabel("Worktree context").filter({ hasText: branch }).first()).toContainText(path);
+
+    await page.goto("/agents/fixture-model");
+    await expect(page.getByLabel("Worktree context").filter({ hasText: branch }).first()).toContainText(path);
+
+    await page.goto(`/agents/fixture-model/sessions/${encodeURIComponent("agent:fixture-model:subagent:TASK-039-fixture-model-lane")}`);
+    await expect(page.getByLabel("Worktree context").filter({ hasText: branch })).toContainText(path);
+  });
 });

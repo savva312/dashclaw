@@ -363,6 +363,12 @@ function discordWorkflowScenarioData(common: FakeGatewayScenarioData): FakeGatew
         parentSessionKey: workBoardThread,
         spawnedBy: workBoardThread,
         requesterSessionKey: workBoardThread,
+        spawnedCwd: "/workspace/.worktrees/task-039-fixture-model-lane",
+        worktree: {
+          id: "task-039-fixture-model-lane",
+          branch: "agent/task-039-fixture-model-lane",
+          repoRoot: "/workspace/dashclaw",
+        },
       }),
       session(acpSession, "coder", "ACP lane: fixture extension", "queued", -2 * 60_000, "run-acp-fixture", "waiting for approval", {
         parentSessionKey: workBoardThread,
