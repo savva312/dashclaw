@@ -284,7 +284,7 @@ function WorkBoardCard({ item, compact = false }: { item: WorkItem; compact?: bo
           <dd>{item.ageLabel}{item.updatedAt ? ` · ${new Date(item.updatedAt).toLocaleTimeString()}` : ""}</dd>
         </div>
       </dl>
-      <DeliveryRecoveryCard delivery={item.deliveryRecovery} compact={compact} />
+      <DeliveryRecoveryCard delivery={item.deliveryRecovery} />
       {item.currentAction ? <div className="work-board-next text-clip">Current: {item.currentAction}</div> : null}
       {incomplete ? <div className="badge warn">{item.lineage.diagnostic ?? "lineage incomplete"}</div> : null}
       <div className="work-board-links">
@@ -298,9 +298,8 @@ function WorkBoardCard({ item, compact = false }: { item: WorkItem; compact?: bo
   );
 }
 
-function DeliveryRecoveryCard({ delivery, compact }: { delivery: DeliveryRecoveryState; compact?: boolean }) {
+function DeliveryRecoveryCard({ delivery }: { delivery: DeliveryRecoveryState }) {
   if (delivery.status === "unknown") return null;
-  if (compact && delivery.status === "unknown") return null;
   return (
     <div className={`delivery-recovery-card delivery-recovery-${delivery.status}`}>
       <div className="delivery-recovery-head">
