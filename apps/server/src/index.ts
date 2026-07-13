@@ -34,7 +34,11 @@ async function main(): Promise<void> {
   if (USE_FAKE) {
     const { startFakeGateway } = await import("@dashclaw/openclaw-gateway");
     gatewayToken = gatewayToken ?? "test-token";
-    const fake = await startFakeGateway({ token: gatewayToken, scenario: FAKE_GATEWAY_SCENARIO });
+    const fake = await startFakeGateway({
+      token: gatewayToken,
+      scenario: FAKE_GATEWAY_SCENARIO,
+      assistantSequenceSessionKey: process.env.DASHCLAW_FAKE_GATEWAY_ASSISTANT_SESSION,
+    });
     gatewayUrl = fake.url;
     console.log(`[dashclaw] fake gateway at ${gatewayUrl} (${fake.scenario})`);
   }

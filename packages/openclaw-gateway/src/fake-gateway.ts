@@ -8,6 +8,7 @@ export interface FakeGatewayOptions {
   port?: number;
   token?: string;
   scenario?: FakeGatewayScenario;
+  assistantSequenceSessionKey?: string;
 }
 
 export interface FakeGatewayHandle {
@@ -41,6 +42,7 @@ export async function startFakeGateway(options: FakeGatewayOptions = {}): Promis
   const state = cloneScenarioData(buildScenarioData(scenario));
   const clients = new Set<WebSocket>();
   let seq = 0;
+  let assistantSequenceScheduled = false;
 
   const server: Server = createServer((_req: IncomingMessage, res: ServerResponse) => {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -119,6 +121,10 @@ export async function startFakeGateway(options: FakeGatewayOptions = {}): Promis
             },
           }),
         );
+        if (options.assistantSequenceSessionKey && !assistantSequenceScheduled) {
+          assistantSequenceScheduled = true;
+          setTimeout(() => emitAssistantSequence(options.assistantSequenceSessionKey), 250);
+        }
         return;
       }
 

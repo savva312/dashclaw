@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const token = process.env.DASHCLAW_TOKEN || "test-token";
 const scenario = process.env.DASHCLAW_FAKE_GATEWAY_SCENARIO || "discord-workflow";
+const testDb = process.env.DASHCLAW_DB || join(tmpdir(), `dashclaw-playwright-${process.pid}.db`);
 
 const children = new Set();
 
@@ -33,6 +37,9 @@ function shutdown(code = 0) {
   for (const child of children) child.kill("SIGTERM");
   setTimeout(() => {
     for (const child of children) child.kill("SIGKILL");
+    for (const suffix of ["", "-wal", "-shm"]) {
+      rmSync(`${testDb}${suffix}`, { force: true });
+    }
     process.exit(code);
   }, 2_000).unref();
 }
@@ -46,6 +53,8 @@ process.on("exit", () => {
 start("server", "corepack", ["pnpm", "--filter", "@dashclaw/server", "dev"], {
   DASHCLAW_FAKE_GATEWAY: "1",
   DASHCLAW_FAKE_GATEWAY_SCENARIO: scenario,
+  DASHCLAW_FAKE_GATEWAY_ASSISTANT_SESSION: "agent:dashclaw:discord:thread:work-board:subagent:model",
+  DASHCLAW_DB: testDb,
   DASHCLAW_TOKEN: token,
   DASHCLAW_DASHBOARD_TOKEN: token,
 });

@@ -22,4 +22,26 @@ describe("mergePreviewWithAssistantEvents", () => {
       ),
     ).toEqual([{ role: "assistant", text: "Readable response" }]);
   });
+
+  it("keeps identical replies distinct when response ids differ", () => {
+    const event = (id: string) => ({
+      id: `timeline-${id}`,
+      kind: "agent.assistant" as const,
+      timestamp: "2026-07-13T10:00:00.000Z",
+      title: "Assistant response",
+      summary: "Done.",
+      payload: { responseId: id, streaming: false },
+    });
+
+    expect(mergePreviewWithAssistantEvents([], [event("response-1"), event("response-2")])).toEqual([
+      { id: "response-1", role: "assistant", text: "Done." },
+      { id: "response-2", role: "assistant", text: "Done." },
+    ]);
+    expect(
+      mergePreviewWithAssistantEvents(
+        [{ id: "response-2", role: "assistant", text: "Done." }],
+        [event("response-2")],
+      ),
+    ).toEqual([{ id: "response-2", role: "assistant", text: "Done." }]);
+  });
 });

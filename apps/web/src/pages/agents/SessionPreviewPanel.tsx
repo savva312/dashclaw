@@ -26,17 +26,31 @@ export function mergePreviewWithAssistantEvents(
 ): PreviewItem[] {
   const previewAssistantText = new Set(
     previewItems
-      .filter((item) => item.role === "assistant")
+      .filter((item) => item.role === "assistant" && !item.id)
       .map((item) => formatPreviewText(item.text ?? "", "assistant")),
   );
+  const previewIds = new Set(previewItems.map((item) => item.id).filter((id): id is string => Boolean(id)));
+  const seenResponseIds = new Set<string>();
   const liveItems: PreviewItem[] = assistantEvents
     .filter((event) => {
       const text = formatPreviewText(event.summary ?? "", "assistant");
-      if (!text || previewAssistantText.has(text)) return false;
-      previewAssistantText.add(text);
+      const responseId = typeof event.payload?.responseId === "string" ? event.payload.responseId : undefined;
+      if (!text || previewIds.has(event.id) || (responseId ? previewIds.has(responseId) : previewAssistantText.has(text))) {
+        return false;
+      }
+      if (responseId) {
+        if (seenResponseIds.has(responseId)) return false;
+        seenResponseIds.add(responseId);
+      } else {
+        previewAssistantText.add(text);
+      }
       return true;
     })
-    .map((event) => ({ id: event.id, role: "assistant", text: event.summary }));
+    .map((event) => ({
+      id: typeof event.payload?.responseId === "string" ? event.payload.responseId : event.id,
+      role: "assistant",
+      text: event.summary,
+    }));
   return [...previewItems, ...liveItems];
 }
 

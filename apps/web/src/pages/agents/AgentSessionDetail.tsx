@@ -63,7 +63,7 @@ export function AgentSessionDetail() {
           event.sessionKey === sessionKey &&
           (event.kind === "agent.assistant" || event.kind === "chat") &&
           Boolean(event.summary),
-      ),
+      ).slice(-1),
     [timeline, sessionKey],
   );
 

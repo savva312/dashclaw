@@ -264,8 +264,11 @@ export class GatewayBridge {
 
     const assistant = this.assistantStreams.consume(name, p);
     if (assistant) {
-      this.recordAssistantTimeline(assistant, p);
+      this.recordAssistantTimeline(assistant);
     } else if (!isAssistantTransportEvent(name, p)) {
+      for (const completed of this.assistantStreams.finalizeBoundary(name, p)) {
+        this.recordAssistantTimeline(completed);
+      }
       const title = buildEventTitle(name, p);
       const summary = buildEventSummary(name, p);
 
@@ -331,7 +334,7 @@ export class GatewayBridge {
     }
   }
 
-  private recordAssistantTimeline(update: AssistantStreamUpdate, payload: Record<string, unknown>): void {
+  private recordAssistantTimeline(update: AssistantStreamUpdate): void {
     if (this.stopped) return;
     try {
       const event = this.store.upsertTimeline({
@@ -340,10 +343,10 @@ export class GatewayBridge {
         timestamp: update.timestamp,
         title: update.terminal ? "Assistant response" : "Assistant responding",
         summary: redactValue(update.text, MAX_ASSISTANT_TEXT) as string,
-        agentId: pickString(payload, "agentId"),
+        agentId: update.agentId,
         sessionKey: update.sessionKey,
         runId: update.runId,
-        taskId: pickString(payload, "taskId"),
+        taskId: update.taskId,
         payload: redactValue({
           responseId: update.responseId,
           streaming: !update.terminal,
@@ -642,6 +645,8 @@ interface AssistantStreamState {
   sessionKey: string;
   runId?: string;
   responseId?: string;
+  agentId?: string;
+  taskId?: string;
   kind: "chat" | "agent.assistant";
 }
 
@@ -657,10 +662,7 @@ class AssistantStreamAccumulator {
     const sessionKey = resolveSessionKey(payload);
     if (!sessionKey) return null;
 
-    if (!isAssistantTransportEvent(name, payload)) {
-      if (isTerminalBoundary(name, payload)) this.clearSession(sessionKey);
-      return null;
-    }
+    if (!isAssistantTransportEvent(name, payload)) return null;
 
     const runId = pickNestedString(payload, "runId") ?? pickString(payload, "runId");
     const responseId = pickNestedString(payload, "responseId", "messageId", "id");
@@ -687,6 +689,8 @@ class AssistantStreamAccumulator {
       sessionKey,
       runId,
       responseId,
+      agentId: pickString(payload, "agentId"),
+      taskId: pickString(payload, "taskId"),
       kind: name === "chat" ? "chat" : "agent.assistant",
     };
 
@@ -706,18 +710,25 @@ class AssistantStreamAccumulator {
     return { ...state, terminal };
   }
 
-  clear(): void {
-    this.streams.clear();
-    this.activeResponseByScope.clear();
-  }
+  finalizeBoundary(name: string, payload: Record<string, unknown>): AssistantStreamUpdate[] {
+    const sessionKey = resolveSessionKey(payload);
+    if (!sessionKey || !isAssistantSessionTerminalBoundary(name, payload)) return [];
 
-  private clearSession(sessionKey: string): void {
+    const completed: AssistantStreamUpdate[] = [];
     for (const [key, state] of this.streams) {
-      if (state.sessionKey === sessionKey) this.streams.delete(key);
+      if (state.sessionKey !== sessionKey) continue;
+      completed.push({ ...state, terminal: true });
+      this.streams.delete(key);
     }
     for (const scope of this.activeResponseByScope.keys()) {
       if (scope.startsWith(`${sessionKey}\u0000`)) this.activeResponseByScope.delete(scope);
     }
+    return completed;
+  }
+
+  clear(): void {
+    this.streams.clear();
+    this.activeResponseByScope.clear();
   }
 
   private evictOldest(): void {
@@ -784,6 +795,14 @@ function mergeAssistantText(current: string, incoming: string): string {
     }
   }
   return current + incoming;
+}
+
+function isAssistantSessionTerminalBoundary(name: string, payload: Record<string, unknown>): boolean {
+  if (name === "shutdown") return true;
+  if (name === "session.message" || name === "sessions.changed") {
+    return isTerminalBoundary(name, payload);
+  }
+  return name === "agent" && pickString(payload, "stream") === "lifecycle" && isTerminalBoundary(name, payload);
 }
 
 function isTerminalBoundary(name: string, payload: Record<string, unknown>): boolean {

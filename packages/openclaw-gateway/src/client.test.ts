@@ -95,7 +95,7 @@ describe("GatewayClient", () => {
     expect(sessions.sessions.find((session) => session.key === "agent:dashclaw:discord:thread:work-board")).toMatchObject({
       parentSessionKey: "agent:dashclaw:discord:channel:1519213500986036264",
     });
-    expect(sessions.sessions.find((session) => session.key === "agent:fixture-model:subagent:TASK-039-fixture-model-lane")).toMatchObject({
+    expect(sessions.sessions.find((session) => session.key === "agent:dashclaw:discord:thread:work-board:subagent:model")).toMatchObject({
       parentSessionKey: "agent:dashclaw:discord:thread:work-board",
     });
     expect(tasks.tasks.map((task) => task.status).sort()).toEqual([

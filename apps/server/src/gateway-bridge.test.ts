@@ -163,4 +163,58 @@ describe("assistant stream accumulation", () => {
     expect(restartedA?.timelineId).not.toBe(finalA?.timelineId);
     expect(restartedA?.text).toBe("New");
   });
+
+  it("keeps one response across an interleaved completed tool event", () => {
+    const streams = gatewayBridgeTestUtils.createAssistantStreamAccumulator();
+    const base = { sessionKey: "session-a", runId: "run-a", messageId: "message-a" };
+    const first = streams.consume("chat", { ...base, state: "delta", deltaText: "I’m checking " });
+
+    expect(
+      streams.consume("session.tool", {
+        ...base,
+        toolName: "read",
+        phase: "completed",
+      }),
+    ).toBeNull();
+
+    const second = streams.consume("chat", { ...base, state: "delta", deltaText: "the runtime now." });
+    const final = streams.consume("chat", {
+      ...base,
+      state: "final",
+      text: "I’m checking the runtime now.",
+    });
+
+    expect(second?.timelineId).toBe(first?.timelineId);
+    expect(final?.timelineId).toBe(first?.timelineId);
+    expect(final?.text).toBe("I’m checking the runtime now.");
+  });
+
+  it("does not mistake a delta suffix for a cumulative response", () => {
+    const streams = gatewayBridgeTestUtils.createAssistantStreamAccumulator();
+    const base = { sessionKey: "session-a", runId: "run-a", messageId: "message-a" };
+
+    streams.consume("chat", { ...base, state: "delta", deltaText: "a" });
+    const update = streams.consume("chat", { ...base, state: "delta", deltaText: "data" });
+
+    expect(update?.text).toBe("adata");
+  });
+
+  it("finalizes an outstanding response at a terminal session boundary", () => {
+    const streams = gatewayBridgeTestUtils.createAssistantStreamAccumulator();
+    const base = { sessionKey: "session-a", runId: "run-a", messageId: "message-a" };
+    const streaming = streams.consume("chat", { ...base, state: "delta", deltaText: "Complete answer" });
+    const completed = streams.finalizeBoundary("session.message", {
+      sessionKey: "session-a",
+      status: "done",
+    });
+
+    expect(completed).toEqual([
+      expect.objectContaining({
+        timelineId: streaming?.timelineId,
+        text: "Complete answer",
+        terminal: true,
+      }),
+    ]);
+    expect(streams.finalizeBoundary("session.message", { sessionKey: "session-a", status: "done" })).toEqual([]);
+  });
 });

@@ -81,7 +81,19 @@ export class RuntimeStore {
   }
 
   upsertTimeline(event: Omit<TimelineEvent, "id"> & { id: string }): TimelineEvent {
-    const row: TimelineEvent = { ...event };
+    const row: TimelineEvent = {
+      id: event.id,
+      kind: event.kind,
+      timestamp: event.timestamp,
+      title: event.title,
+      summary: event.summary,
+      agentId: event.agentId,
+      sessionKey: event.sessionKey,
+      runId: event.runId,
+      taskId: event.taskId,
+      severity: event.severity,
+      payload: event.payload,
+    };
     this.db
       .prepare(
         `INSERT INTO timeline_events (id, kind, timestamp, title, summary, agent_id, session_key, run_id, task_id, severity, payload)
