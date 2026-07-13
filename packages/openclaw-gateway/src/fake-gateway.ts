@@ -8,6 +8,7 @@ export interface FakeGatewayOptions {
   port?: number;
   token?: string;
   scenario?: FakeGatewayScenario;
+  assistantSequenceSessionKey?: string;
 }
 
 export interface FakeGatewayHandle {
@@ -16,6 +17,7 @@ export interface FakeGatewayHandle {
   scenario: FakeGatewayScenario;
   close: () => Promise<void>;
   emitEvent: (event: string, payload?: unknown) => void;
+  emitAssistantSequence: (sessionKey?: string) => void;
 }
 
 type JsonObject = Record<string, unknown>;
@@ -40,6 +42,7 @@ export async function startFakeGateway(options: FakeGatewayOptions = {}): Promis
   const state = cloneScenarioData(buildScenarioData(scenario));
   const clients = new Set<WebSocket>();
   let seq = 0;
+  let assistantSequenceScheduled = false;
 
   const server: Server = createServer((_req: IncomingMessage, res: ServerResponse) => {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -52,6 +55,14 @@ export async function startFakeGateway(options: FakeGatewayOptions = {}): Promis
     for (const ws of clients) {
       if (ws.readyState === ws.OPEN) ws.send(msg);
     }
+  };
+
+  const emitAssistantSequence = (sessionKey = "agent:main:main") => {
+    const common = { sessionKey, runId: "run-stream-fixture", messageId: "message-stream-fixture" };
+    emitEvent("chat", { ...common, state: "delta", deltaText: "I’m checking " });
+    emitEvent("session.tool", { ...common, toolName: "read", phase: "completed" });
+    emitEvent("chat", { ...common, state: "delta", deltaText: "the runtime now." });
+    emitEvent("chat", { ...common, state: "final", text: "I’m checking the runtime now." });
   };
 
   const wss = new WebSocketServer({ server });
@@ -110,6 +121,10 @@ export async function startFakeGateway(options: FakeGatewayOptions = {}): Promis
             },
           }),
         );
+        if (options.assistantSequenceSessionKey && !assistantSequenceScheduled) {
+          assistantSequenceScheduled = true;
+          setTimeout(() => emitAssistantSequence(options.assistantSequenceSessionKey), 250);
+        }
         return;
       }
 
@@ -141,6 +156,7 @@ export async function startFakeGateway(options: FakeGatewayOptions = {}): Promis
         wss.close(() => server.close(() => resolve()));
       }),
     emitEvent,
+    emitAssistantSequence,
   };
 }
 
@@ -155,9 +171,25 @@ function responseFor(state: FakeGatewayScenarioData, method: string, params?: Re
     case "sessions.list":
       return { sessions: state.sessions };
     case "sessions.preview": {
-      const key = typeof params?.key === "string" ? params.key : undefined;
-      const session = state.sessions.find((candidate) => candidate.key === key) ?? state.sessions[0];
-      return { session, messages: session ? [{ role: "assistant", content: `Preview for ${session.label ?? session.key}` }] : [] };
+      const keys = Array.isArray(params?.keys)
+        ? params.keys.filter((key): key is string => typeof key === "string")
+        : [];
+      const limit = typeof params?.limit === "number" ? Math.max(1, params.limit) : 20;
+      return {
+        previews: keys.map((key) => {
+          const session = state.sessions.find((candidate) => candidate.key === key);
+          return {
+            key,
+            status: session?.status,
+            items: session
+              ? [
+                  { role: "user", text: `Status check for ${session.label ?? session.key}` },
+                  { role: "assistant", text: `Preview for ${session.label ?? session.key}` },
+                ].slice(-limit)
+              : [],
+          };
+        }),
+      };
     }
     case "tasks.list":
       return { tasks: filterTasks(state.tasks, params) };
@@ -333,7 +365,7 @@ function discordWorkflowScenarioData(common: FakeGatewayScenarioData): FakeGatew
   const completedThread = "agent:dashclaw:discord:thread:completed-summary";
   const failedThread = "agent:dashclaw:discord:thread:failed-delivery";
   const archivedThread = "agent:dashclaw:discord:thread:archived-context";
-  const subagentSession = "agent:fixture-model:subagent:TASK-039-fixture-model-lane";
+  const subagentSession = "agent:dashclaw:discord:thread:work-board:subagent:model";
   const acpSession = "agent:coder:acp:TASK-039-coding-lane";
   const missingParentThread = "agent:dashclaw:discord:thread:missing-original";
 
@@ -363,6 +395,12 @@ function discordWorkflowScenarioData(common: FakeGatewayScenarioData): FakeGatew
         parentSessionKey: workBoardThread,
         spawnedBy: workBoardThread,
         requesterSessionKey: workBoardThread,
+        spawnedCwd: "/workspace/.worktrees/task-039-fixture-model-lane",
+        worktree: {
+          id: "task-039-fixture-model-lane",
+          branch: "agent/task-039-fixture-model-lane",
+          repoRoot: "/workspace/dashclaw",
+        },
       }),
       session(acpSession, "coder", "ACP lane: fixture extension", "queued", -2 * 60_000, "run-acp-fixture", "waiting for approval", {
         parentSessionKey: workBoardThread,

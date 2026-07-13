@@ -13,6 +13,7 @@ import {
   subscribeEvents,
 } from "./api";
 import { RUNTIME_POLL_MS, TIMELINE_LIMIT, runtimeKeys } from "./queries";
+import { upsertTimelineEvent } from "./timeline";
 import { Badge, Button, Input, Panel } from "./ui";
 
 interface AppState {
@@ -135,8 +136,7 @@ export function AppProvider({
       },
       onTimeline: (event) => {
         queryClient.setQueryData(runtimeKeys.timeline(TIMELINE_LIMIT), (current: TimelineEvent[] | undefined) => {
-          const base = current ?? [];
-          return [...base.slice(-(TIMELINE_LIMIT - 1)), event];
+          return upsertTimelineEvent(current, event, TIMELINE_LIMIT);
         });
       },
       onAudit: (entries) => {

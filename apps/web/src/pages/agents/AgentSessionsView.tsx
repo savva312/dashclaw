@@ -4,6 +4,7 @@ import { useAppState } from "../../context";
 import { AgentAvatar } from "./AgentAvatar";
 import { StatusChip } from "./Chips";
 import { SessionCard } from "./SessionCard";
+import { WorktreeMetadata } from "./WorktreeMetadata";
 import {
   buildAgentStats,
   groupSessionsByKind,
@@ -72,7 +73,7 @@ export function AgentSessionsView() {
     );
   }
 
-  const primarySession = stats.activeSessions[0];
+  const primarySession = stats.primarySession;
 
   return (
     <div className="page-shell office-page">
@@ -111,6 +112,7 @@ export function AgentSessionsView() {
           <span className="live-banner-label">Live now</span>
           <strong>{stats.currentLabel ?? "Active run in progress"}</strong>
           {stats.currentTool ? <span className="mono live-banner-tool">{stats.currentTool}</span> : null}
+          <WorktreeMetadata worktree={primarySession.worktree} />
           <span className="live-banner-arrow" aria-hidden>→</span>
         </Link>
       ) : null}
