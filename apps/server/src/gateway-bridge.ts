@@ -263,7 +263,7 @@ export class GatewayBridge {
   }
 
   private handleGatewayEvent(name: string, payload: unknown): void {
-    const p = (payload ?? {}) as Record<string, unknown>;
+    const p = normalizeGatewayEventPayload(name, payload);
     const kind = mapEventKind(name, p);
     if (!kind) return;
 
@@ -278,10 +278,10 @@ export class GatewayBridge {
       const summary = buildEventSummary(name, p);
 
       this.recordTimeline(kind, title, summary, undefined, {
-        agentId: pickString(p, "agentId"),
+        agentId: pickNestedString(p, "agentId"),
         sessionKey: resolveSessionKey(p),
-        runId: pickString(p, "runId"),
-        taskId: pickString(p, "taskId"),
+        runId: pickNestedString(p, "runId"),
+        taskId: pickNestedString(p, "taskId"),
         payload: redactValue(p) as Record<string, unknown>,
       });
     }
@@ -346,8 +346,9 @@ export class GatewayBridge {
         id: update.timelineId,
         kind: update.kind,
         timestamp: update.timestamp,
-        title: update.terminal ? "Assistant response" : "Assistant responding",
+        title: assistantTimelineTitle(update),
         summary: redactValue(update.text, MAX_ASSISTANT_TEXT) as string,
+        severity: update.terminalState === "error" ? "error" : update.terminalState === "aborted" ? "warn" : undefined,
         agentId: update.agentId,
         sessionKey: update.sessionKey,
         runId: update.runId,
@@ -355,6 +356,15 @@ export class GatewayBridge {
         payload: redactValue({
           responseId: update.responseId,
           streaming: !update.terminal,
+          state: update.terminalState ?? "delta",
+          sequence: update.sequence,
+          sequenceDiagnostic: update.sequenceDiagnostic,
+          replace: update.replace,
+          usage: update.usage,
+          stopReason: update.stopReason,
+          errorKind: update.errorKind,
+          errorMessage: update.errorMessage,
+          spawnedBy: update.spawnedBy,
         }) as Record<string, unknown>,
       });
       this.onTimeline?.(event);
@@ -694,6 +704,26 @@ function hasDefinedValue(value: object): boolean {
   return Object.values(value).some((entry) => entry !== undefined);
 }
 
+/**
+ * OpenClaw's `agent` event is an envelope: routing fields live at the top level
+ * while stream-specific fields live in `data`. Consumers should not have to
+ * know which half of the envelope owns a field. Keep the original `data`
+ * object for inspection, but expose its fields through one normalized view.
+ */
+function normalizeGatewayEventPayload(name: string, payload: unknown): Record<string, unknown> {
+  const envelope = isRecord(payload) ? payload : {};
+  if (name !== "agent" || !isRecord(envelope.data)) return envelope;
+  return {
+    ...envelope.data,
+    ...envelope,
+    data: envelope.data,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function mapEventKind(name: string, p: Record<string, unknown>): TimelineEventKind | null {
   switch (name) {
     case "agent": {
@@ -746,6 +776,8 @@ function buildEventTitle(name: string, p: Record<string, unknown>): string {
     const state = pickString(p, "state") ?? "update";
     if (state === "delta") return "Chat streaming";
     if (state === "final") return "Chat completed";
+    if (state === "aborted") return "Chat aborted";
+    if (state === "error") return "Chat failed";
     if (state === "started") return "Chat started";
     return `Chat ${state}`;
   }
@@ -774,6 +806,13 @@ function buildEventSummary(name: string, p: Record<string, unknown>): string | u
     return pickString(p, "phase") ?? undefined;
   }
   return pickString(p, "summary", "message", "status") ?? undefined;
+}
+
+function assistantTimelineTitle(update: AssistantStreamUpdate): string {
+  if (!update.terminal) return "Assistant responding";
+  if (update.terminalState === "aborted") return "Assistant response aborted";
+  if (update.terminalState === "error") return "Assistant response failed";
+  return "Assistant response";
 }
 
 function pickString(obj: Record<string, unknown>, ...keys: string[]): string | undefined {
@@ -812,16 +851,26 @@ interface AssistantStreamState {
   responseId?: string;
   agentId?: string;
   taskId?: string;
+  spawnedBy?: string;
   kind: "chat" | "agent.assistant";
+  sequence?: number;
 }
 
 interface AssistantStreamUpdate extends AssistantStreamState {
   terminal: boolean;
+  terminalState?: string;
+  sequenceDiagnostic?: "gap" | "regression" | "duplicate";
+  replace?: boolean;
+  usage?: unknown;
+  stopReason?: string;
+  errorKind?: string;
+  errorMessage?: string;
 }
 
 class AssistantStreamAccumulator {
   private streams = new Map<string, AssistantStreamState>();
   private activeResponseByScope = new Map<string, string>();
+  private terminalKeys = new Map<string, true>();
 
   consume(name: string, payload: Record<string, unknown>): AssistantStreamUpdate | null {
     const sessionKey = resolveSessionKey(payload);
@@ -829,50 +878,74 @@ class AssistantStreamAccumulator {
 
     if (!isAssistantTransportEvent(name, payload)) return null;
 
-    const runId = pickNestedString(payload, "runId") ?? pickString(payload, "runId");
+    const runId = pickNestedString(payload, "runId");
     const responseId = pickNestedString(payload, "responseId", "messageId", "id");
     const scope = `${sessionKey}\u0000run:${runId ?? "current"}`;
     const key = responseId
-      ? `${sessionKey}\u0000response:${responseId}`
+      ? `${scope}\u0000response:${responseId}`
       : scope;
+    const terminalState = terminalStateFor(name, payload);
+    const terminal = terminalState !== undefined;
+    const stableIdentity = Boolean(runId || responseId);
+    if (this.terminalKeys.has(key)) {
+      if (stableIdentity || terminal) return null;
+      this.terminalKeys.delete(key);
+    }
     if (responseId) {
-      const previousKey = this.activeResponseByScope.get(scope);
-      if (previousKey && previousKey !== key) this.streams.delete(previousKey);
       this.streams.delete(scope);
       this.activeResponseByScope.set(scope, key);
     }
-    const terminal = isTerminalBoundary(name, payload);
     const chunk = extractAssistantText(payload);
     const existing = this.streams.get(key);
+    const sequence = pickNestedNumber(payload, "seq", "sequence");
+    const sequenceDiagnostic = compareSequence(existing?.sequence, sequence);
+    const replace = pickNestedBoolean(payload, "replace") ?? false;
 
-    if (!chunk && !existing) return null;
+    if (!chunk && !existing && !terminal) return null;
 
     const state: AssistantStreamState = existing ?? {
       timelineId: randomUUID(),
-      timestamp: new Date().toISOString(),
+      timestamp: eventTimestamp(payload),
       text: "",
       sessionKey,
       runId,
       responseId,
-      agentId: pickString(payload, "agentId"),
-      taskId: pickString(payload, "taskId"),
+      agentId: pickNestedString(payload, "agentId"),
+      taskId: pickNestedString(payload, "taskId"),
+      spawnedBy: pickNestedString(payload, "spawnedBy"),
       kind: name === "chat" ? "chat" : "agent.assistant",
     };
 
-    if (chunk) state.text = mergeAssistantText(state.text, chunk).slice(0, MAX_ASSISTANT_TEXT);
+    const authoritativeTerminalText = terminal && Boolean(pickString(payload, "text", "content"));
+    if (chunk && (!sequenceDiagnostic || sequenceDiagnostic === "gap" || authoritativeTerminalText)) {
+      state.text = (replace ? chunk : mergeAssistantText(state.text, chunk)).slice(0, MAX_ASSISTANT_TEXT);
+    }
+    if (sequence !== undefined && (state.sequence === undefined || sequence > state.sequence)) state.sequence = sequence;
     if (!state.text) {
-      if (terminal) this.streams.delete(key);
-      return null;
+      if (!terminal) return null;
+      state.text = terminalFallbackText(terminalState, payload);
     }
 
     if (terminal) {
-      this.streams.delete(key);
+      this.deleteStream(key);
       if (this.activeResponseByScope.get(scope) === key) this.activeResponseByScope.delete(scope);
+      this.rememberTerminal(key);
     } else {
       this.streams.set(key, state);
       this.evictOldest();
     }
-    return { ...state, terminal };
+    return {
+      ...state,
+      terminal,
+      terminalState,
+      sequence: sequence ?? state.sequence,
+      sequenceDiagnostic,
+      replace,
+      usage: pickNestedValue(payload, "usage"),
+      stopReason: pickNestedString(payload, "stopReason"),
+      errorKind: pickNestedString(payload, "errorKind"),
+      errorMessage: pickNestedString(payload, "errorMessage"),
+    };
   }
 
   finalizeBoundary(name: string, payload: Record<string, unknown>): AssistantStreamUpdate[] {
@@ -882,8 +955,9 @@ class AssistantStreamAccumulator {
     const completed: AssistantStreamUpdate[] = [];
     for (const [key, state] of this.streams) {
       if (state.sessionKey !== sessionKey) continue;
-      completed.push({ ...state, terminal: true });
-      this.streams.delete(key);
+      completed.push({ ...state, terminal: true, terminalState: terminalStateFor(name, payload) });
+      this.deleteStream(key);
+      this.rememberTerminal(key);
     }
     for (const scope of this.activeResponseByScope.keys()) {
       if (scope.startsWith(`${sessionKey}\u0000`)) this.activeResponseByScope.delete(scope);
@@ -894,13 +968,35 @@ class AssistantStreamAccumulator {
   clear(): void {
     this.streams.clear();
     this.activeResponseByScope.clear();
+    this.terminalKeys.clear();
+  }
+
+  stats(): { active: number; terminal: number } {
+    return { active: this.streams.size, terminal: this.terminalKeys.size };
   }
 
   private evictOldest(): void {
     while (this.streams.size > MAX_ASSISTANT_STREAMS) {
       const oldest = this.streams.keys().next().value as string | undefined;
       if (!oldest) return;
-      this.streams.delete(oldest);
+      this.deleteStream(oldest);
+    }
+  }
+
+  private deleteStream(key: string): void {
+    this.streams.delete(key);
+    for (const [scope, activeKey] of this.activeResponseByScope) {
+      if (activeKey === key) this.activeResponseByScope.delete(scope);
+    }
+  }
+
+  private rememberTerminal(key: string): void {
+    this.terminalKeys.delete(key);
+    this.terminalKeys.set(key, true);
+    while (this.terminalKeys.size > MAX_ASSISTANT_STREAMS * 2) {
+      const oldest = this.terminalKeys.keys().next().value as string | undefined;
+      if (!oldest) return;
+      this.terminalKeys.delete(oldest);
     }
   }
 }
@@ -948,6 +1044,55 @@ function pickNestedString(payload: Record<string, unknown>, ...keys: string[]): 
   return undefined;
 }
 
+function pickNestedNumber(payload: Record<string, unknown>, ...keys: string[]): number | undefined {
+  const value = pickNestedValue(payload, ...keys);
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function pickNestedBoolean(payload: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+  const value = pickNestedValue(payload, ...keys);
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function pickNestedValue(payload: Record<string, unknown>, ...keys: string[]): unknown {
+  for (const key of keys) {
+    if (payload[key] !== undefined) return payload[key];
+  }
+  for (const container of ["message", "data", "chunk", "response"]) {
+    const nested = payload[container];
+    if (!isRecord(nested)) continue;
+    for (const key of keys) {
+      if (nested[key] !== undefined) return nested[key];
+    }
+  }
+  return undefined;
+}
+
+function compareSequence(
+  previous: number | undefined,
+  incoming: number | undefined,
+): AssistantStreamUpdate["sequenceDiagnostic"] {
+  if (previous === undefined || incoming === undefined) return undefined;
+  if (incoming === previous) return "duplicate";
+  if (incoming < previous) return "regression";
+  if (incoming > previous + 1) return "gap";
+  return undefined;
+}
+
+function terminalFallbackText(state: string | undefined, payload: Record<string, unknown>): string {
+  const errorMessage = pickNestedString(payload, "errorMessage", "message");
+  if (state === "error") return errorMessage ? `Response failed: ${errorMessage}` : "Response failed";
+  if (state === "aborted") return "Response aborted";
+  return "Response completed without text";
+}
+
+function eventTimestamp(payload: Record<string, unknown>): string {
+  const value = pickNestedValue(payload, "ts", "timestamp");
+  if (typeof value === "number" && Number.isFinite(value)) return new Date(value).toISOString();
+  if (typeof value === "string" && !Number.isNaN(Date.parse(value))) return new Date(value).toISOString();
+  return new Date().toISOString();
+}
+
 function mergeAssistantText(current: string, incoming: string): string {
   if (!current) return incoming;
   if (!incoming || current === incoming || current.endsWith(incoming)) return current;
@@ -971,8 +1116,13 @@ function isAssistantSessionTerminalBoundary(name: string, payload: Record<string
 }
 
 function isTerminalBoundary(name: string, payload: Record<string, unknown>): boolean {
+  return terminalStateFor(name, payload) !== undefined;
+}
+
+function terminalStateFor(name: string, payload: Record<string, unknown>): string | undefined {
   const state = pickNestedString(payload, "state", "status", "phase", "event");
-  if (!state) return name === "shutdown";
+  if (!state) return name === "shutdown" ? "shutdown" : undefined;
+  const normalized = state.toLowerCase();
   return new Set([
     "final",
     "done",
@@ -989,7 +1139,9 @@ function isTerminalBoundary(name: string, payload: Record<string, unknown>): boo
     "ended",
     "stop",
     "stopped",
-  ]).has(state.toLowerCase());
+  ]).has(normalized)
+    ? normalized
+    : undefined;
 }
 
 interface LiveSessionActivity {
@@ -1063,7 +1215,7 @@ function updateLiveSessionFromEvent(
       });
       return true;
     }
-    if (state === "final" || state === "error") {
+    if (state === "final" || state === "error" || state === "aborted") {
       return liveSessions.delete(sessionKey);
     }
     return false;
@@ -1130,6 +1282,9 @@ export const gatewayBridgeTestUtils = {
   normalizeAgent,
   normalizeSession,
   normalizeTask,
+  normalizeGatewayEventPayload,
+  mapEventKind,
+  buildEventTitle,
   mergeAssistantText,
   createAssistantStreamAccumulator: () => new AssistantStreamAccumulator(),
   createLiveSessionTracker: () => {

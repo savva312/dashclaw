@@ -18,6 +18,7 @@ export interface FakeGatewayHandle {
   close: () => Promise<void>;
   emitEvent: (event: string, payload?: unknown) => void;
   emitAssistantSequence: (sessionKey?: string) => void;
+  emitStreamContractSequence: (sessionKey?: string) => void;
 }
 
 type JsonObject = Record<string, unknown>;
@@ -63,6 +64,45 @@ export async function startFakeGateway(options: FakeGatewayOptions = {}): Promis
     emitEvent("session.tool", { ...common, toolName: "read", phase: "completed" });
     emitEvent("chat", { ...common, state: "delta", deltaText: "the runtime now." });
     emitEvent("chat", { ...common, state: "final", text: "I’m checking the runtime now." });
+  };
+
+  const emitStreamContractSequence = (sessionKey = "agent:main:main") => {
+    const spawnedBy = "agent:main:main";
+    const first = { sessionKey, runId: "run-contract-first", messageId: "message-contract-first" };
+    const concurrent = { sessionKey, runId: "run-contract-concurrent", messageId: "message-contract-concurrent" };
+    emitEvent("chat", { ...first, agentId: "main", spawnedBy, state: "delta", seq: 1, deltaText: "Inspecting " });
+    emitEvent("chat", { ...concurrent, agentId: "main", spawnedBy, state: "delta", seq: 1, deltaText: "Concurrent" });
+    emitEvent("agent", {
+      runId: first.runId,
+      seq: 2,
+      stream: "tool",
+      ts: Date.now(),
+      spawnedBy,
+      data: { sessionKey, agentId: "main", toolName: "read", phase: "completed" },
+    });
+    emitEvent("chat", {
+      ...first,
+      agentId: "main",
+      spawnedBy,
+      state: "final",
+      seq: 2,
+      text: "Inspecting complete",
+      replace: true,
+      usage: { inputTokens: 12, outputTokens: 3 },
+      stopReason: "stop",
+    });
+    emitEvent("chat", { ...concurrent, agentId: "main", spawnedBy, state: "aborted", seq: 2, stopReason: "operator" });
+    emitEvent("chat", {
+      sessionKey,
+      runId: "run-contract-error",
+      messageId: "message-contract-error",
+      agentId: "main",
+      spawnedBy,
+      state: "error",
+      seq: 1,
+      errorKind: "provider",
+      errorMessage: "fixture provider failure",
+    });
   };
 
   const wss = new WebSocketServer({ server });
@@ -157,6 +197,7 @@ export async function startFakeGateway(options: FakeGatewayOptions = {}): Promis
       }),
     emitEvent,
     emitAssistantSequence,
+    emitStreamContractSequence,
   };
 }
 

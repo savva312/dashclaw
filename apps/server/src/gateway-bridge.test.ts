@@ -294,6 +294,47 @@ describe("gateway session normalization", () => {
 });
 
 describe("assistant stream accumulation", () => {
+  it("normalizes stream-specific agent data without losing envelope lineage", () => {
+    const normalized = gatewayBridgeTestUtils.normalizeGatewayEventPayload("agent", {
+      runId: "run-agent",
+      seq: 7,
+      stream: "tool",
+      ts: 1_752_000_000_000,
+      spawnedBy: "agent:main:main",
+      data: {
+        sessionKey: "agent:worker:subagent:one",
+        agentId: "worker",
+        toolName: "read",
+        phase: "completed",
+      },
+    });
+
+    expect(normalized).toMatchObject({
+      runId: "run-agent",
+      seq: 7,
+      stream: "tool",
+      spawnedBy: "agent:main:main",
+      sessionKey: "agent:worker:subagent:one",
+      agentId: "worker",
+      toolName: "read",
+      phase: "completed",
+      data: expect.objectContaining({ toolName: "read" }),
+    });
+    expect(gatewayBridgeTestUtils.mapEventKind("agent", normalized)).toBe("agent.tool");
+    expect(gatewayBridgeTestUtils.buildEventTitle("agent", normalized)).toBe("Tool: read");
+
+    const tracker = gatewayBridgeTestUtils.createLiveSessionTracker();
+    expect(tracker.update("agent", normalized)).toBe(true);
+    expect(tracker.apply([])).toEqual([
+      expect.objectContaining({
+        key: "agent:worker:subagent:one",
+        agentId: "worker",
+        currentTool: "read",
+        isActive: true,
+      }),
+    ]);
+  });
+
   it("coalesces delta and cumulative chunks under one stable timeline id", () => {
     const streams = gatewayBridgeTestUtils.createAssistantStreamAccumulator();
     const base = { sessionKey: "session-a", runId: "run-a", messageId: "message-a" };
@@ -311,7 +352,7 @@ describe("assistant stream accumulation", () => {
     expect(final).toMatchObject({ text: "Hello", terminal: true, sessionKey: "session-a" });
   });
 
-  it("keeps concurrent sessions and response ids isolated and resets after final", () => {
+  it("keeps concurrent sessions and runs isolated and starts a later run cleanly", () => {
     const streams = gatewayBridgeTestUtils.createAssistantStreamAccumulator();
     const a = streams.consume("agent", {
       stream: "assistant",
@@ -335,6 +376,7 @@ describe("assistant stream accumulation", () => {
     const restartedA = streams.consume("agent", {
       stream: "assistant",
       sessionKey: "session-a",
+      runId: "run-a-next",
       responseId: "response-a",
       data: { delta: "New" },
     });
@@ -345,6 +387,102 @@ describe("assistant stream accumulation", () => {
     expect(finalA?.text).toBe("Alpha done");
     expect(restartedA?.timelineId).not.toBe(finalA?.timelineId);
     expect(restartedA?.text).toBe("New");
+  });
+
+  it("terminates aborted and errored runs honestly and ignores duplicate terminals", () => {
+    const streams = gatewayBridgeTestUtils.createAssistantStreamAccumulator();
+    const abortedBase = { sessionKey: "session-a", runId: "run-abort", messageId: "message-abort" };
+    const streaming = streams.consume("chat", { ...abortedBase, state: "delta", seq: 1, deltaText: "Partial" });
+    const aborted = streams.consume("chat", {
+      ...abortedBase,
+      state: "aborted",
+      seq: 2,
+      stopReason: "operator",
+    });
+
+    expect(aborted).toMatchObject({
+      timelineId: streaming?.timelineId,
+      text: "Partial",
+      terminal: true,
+      terminalState: "aborted",
+      stopReason: "operator",
+      sequence: 2,
+    });
+    expect(streams.consume("chat", { ...abortedBase, state: "aborted", seq: 2 })).toBeNull();
+
+    const failed = streams.consume("chat", {
+      sessionKey: "session-a",
+      runId: "run-error",
+      state: "error",
+      seq: 1,
+      errorKind: "provider",
+      errorMessage: "upstream unavailable",
+    });
+    expect(failed).toMatchObject({
+      text: "Response failed: upstream unavailable",
+      terminal: true,
+      terminalState: "error",
+      errorKind: "provider",
+      errorMessage: "upstream unavailable",
+    });
+
+    const next = streams.consume("chat", {
+      sessionKey: "session-a",
+      runId: "run-next",
+      state: "delta",
+      seq: 1,
+      deltaText: "Clean start",
+    });
+    expect(next?.text).toBe("Clean start");
+    expect(next?.timelineId).not.toBe(streaming?.timelineId);
+  });
+
+  it("preserves replacement, usage, and sequence diagnostics", () => {
+    const streams = gatewayBridgeTestUtils.createAssistantStreamAccumulator();
+    const base = { sessionKey: "session-a", runId: "run-a", messageId: "message-a" };
+
+    streams.consume("chat", { ...base, state: "delta", seq: 10, deltaText: "Draft" });
+    const replaced = streams.consume("chat", {
+      ...base,
+      state: "delta",
+      seq: 12,
+      deltaText: "Final draft",
+      replace: true,
+      usage: { inputTokens: 10, outputTokens: 2 },
+    });
+    const duplicate = streams.consume("chat", { ...base, state: "delta", seq: 12, deltaText: " duplicated" });
+    const regression = streams.consume("chat", { ...base, state: "delta", seq: 11, deltaText: " regressed" });
+
+    expect(replaced).toMatchObject({
+      text: "Final draft",
+      replace: true,
+      sequenceDiagnostic: "gap",
+      usage: { inputTokens: 10, outputTokens: 2 },
+    });
+    expect(duplicate).toMatchObject({ text: "Final draft", sequenceDiagnostic: "duplicate" });
+    expect(regression).toMatchObject({ text: "Final draft", sequenceDiagnostic: "regression" });
+  });
+
+  it("bounds active and terminal bookkeeping", () => {
+    const streams = gatewayBridgeTestUtils.createAssistantStreamAccumulator();
+    for (let index = 0; index < 250; index += 1) {
+      streams.consume("chat", {
+        sessionKey: `session-${index}`,
+        runId: `run-${index}`,
+        state: "delta",
+        deltaText: "active",
+      });
+    }
+    expect(streams.stats().active).toBe(100);
+
+    for (let index = 0; index < 300; index += 1) {
+      streams.consume("chat", {
+        sessionKey: `terminal-session-${index}`,
+        runId: `terminal-run-${index}`,
+        state: "aborted",
+      });
+    }
+    expect(streams.stats().terminal).toBe(200);
   });
 
   it("keeps one response across an interleaved completed tool event", () => {
