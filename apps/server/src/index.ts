@@ -92,8 +92,11 @@ function parseFakeGatewayScenario(value: string | undefined): FakeGatewayScenari
     value === "busy" ||
     value === "failed" ||
     value === "approval-heavy" ||
+    value === "approval-cockpit" ||
     value === "degraded" ||
-    value === "discord-workflow"
+    value === "discord-workflow" ||
+    value === "session-pagination" ||
+    value === "task-contract"
   ) {
     return value;
   }

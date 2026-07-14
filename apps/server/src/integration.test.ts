@@ -93,6 +93,61 @@ describe("server integration", () => {
     });
   });
 
+  it("publishes every session from a fake gateway with more than 100 sessions", async () => {
+    fake = await startFakeGateway({ token: "test-token", scenario: "session-pagination" });
+    store = new RuntimeStore(join(tmpdir(), `dashclaw-${randomUUID()}.db`));
+
+    bridge = new GatewayBridge({
+      url: fake.url,
+      token: "test-token",
+      store,
+    });
+    await bridge.start();
+    const snapshot = await bridge.refreshSnapshot();
+
+    expect(snapshot.sessions).toHaveLength(125);
+    expect(new Set(snapshot.sessions.map((session) => session.key))).toHaveLength(125);
+    expect(snapshot.discovery?.sessions).toMatchObject({
+      state: "complete",
+      degraded: false,
+      pagesFetched: 2,
+      rowsFetched: 125,
+      uniqueSessionsFetched: 125,
+      publishedSessions: 125,
+      expectedTotal: 125,
+    });
+  });
+
+  it("preserves task contract progress, results, runtime, lineage, and unavailable summaries", async () => {
+    fake = await startFakeGateway({ token: "test-token", scenario: "task-contract" });
+    store = new RuntimeStore(join(tmpdir(), `dashclaw-${randomUUID()}.db`));
+    bridge = new GatewayBridge({ url: fake.url, token: "test-token", store });
+
+    await bridge.start();
+    const snapshot = await bridge.refreshSnapshot();
+
+    expect(snapshot.tasks).toHaveLength(82);
+    expect(snapshot.tasks.find((task) => task.id === "task-contract-running")).toMatchObject({
+      progressSummary: "Inspecting task lifecycle and result fields",
+      ownerKey: "agent:main:main",
+      childSessionKey: "agent:worker:subagent",
+      sourceId: "dashboard",
+      flowId: "flow-contract",
+      runtime: { id: "runtime-contract-running", source: "gateway", runtimeMs: 340000 },
+    });
+    expect(snapshot.tasks.find((task) => task.id === "task-contract-success")).toMatchObject({
+      terminalSummary: "Validated all supported task fields",
+      startedAt: "2026-06-24T17:48:00.000Z",
+      endedAt: "2026-06-24T17:51:00.000Z",
+    });
+    expect(snapshot.tasks.find((task) => task.id === "task-contract-failed")).toMatchObject({
+      error: "Task schema mismatch",
+      errorCode: "TASK_SCHEMA_MISMATCH",
+      errorKind: "validation",
+    });
+    expect(snapshot.tasks.find((task) => task.id === "task-contract-missing-summary")?.terminalSummary).toBeUndefined();
+  });
+
   it("audits admin RPC calls", async () => {
     fake = await startFakeGateway({ token: "test-token" });
     store = new RuntimeStore(join(tmpdir(), `dashclaw-${randomUUID()}.db`));

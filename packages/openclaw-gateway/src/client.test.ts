@@ -119,6 +119,39 @@ describe("GatewayClient", () => {
     client.disconnect();
   });
 
+  it("serves live-shaped task progress, results, lineage, runtime, and missing-summary variants", async () => {
+    fake = await startFakeGateway({ token: "test-token", scenario: "task-contract" });
+    const client = new GatewayClient({
+      url: fake.url,
+      token: "test-token",
+      reconnect: false,
+      WebSocketImpl: WebSocket as unknown as typeof globalThis.WebSocket,
+    });
+    await client.connect();
+
+    const result = await client.call<{ tasks: Array<Record<string, unknown>> }>("tasks.list");
+    expect(result.tasks).toHaveLength(82);
+    expect(result.tasks.find((task) => task.id === "task-contract-running")).toMatchObject({
+      progressSummary: "Inspecting task lifecycle and result fields",
+      ownerKey: "agent:main:main",
+      childSessionKey: "agent:worker:subagent",
+      flowId: "flow-contract",
+      runtime: expect.any(Object),
+    });
+    expect(result.tasks.find((task) => task.id === "task-contract-success")).toMatchObject({
+      terminalSummary: "Validated all supported task fields",
+    });
+    expect(result.tasks.find((task) => task.id === "task-contract-failed")?.error).toEqual({
+      message: "Task schema mismatch",
+      code: "TASK_SCHEMA_MISMATCH",
+      kind: "validation",
+      stack: "not exposed",
+    });
+    expect(result.tasks.find((task) => task.id === "task-contract-missing-summary")).not.toHaveProperty("terminalSummary");
+
+    client.disconnect();
+  });
+
   it("receives pushed events", async () => {
     fake = await startFakeGateway({ token: "test-token" });
     const client = new GatewayClient({
@@ -167,6 +200,27 @@ describe("GatewayClient", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(events.map((event) => event.name)).toEqual(expect.arrayContaining(["chat", "session.tool"]));
     expect(events.filter((event) => event.name === "chat")).toHaveLength(3);
+
+    events.length = 0;
+    fake.emitStreamContractSequence();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(events.filter((event) => event.name === "chat")).toHaveLength(5);
+    expect(events.find((event) => event.name === "agent")?.payload).toMatchObject({
+      stream: "tool",
+      spawnedBy: "agent:main:main",
+      data: {
+        sessionKey: "agent:main:main",
+        toolName: "read",
+        phase: "completed",
+      },
+    });
+    expect(events.filter((event) => event.name === "chat").map((event) => event.payload)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ state: "final", replace: true, usage: expect.any(Object) }),
+        expect.objectContaining({ state: "aborted", stopReason: "operator" }),
+        expect.objectContaining({ state: "error", errorKind: "provider" }),
+      ]),
+    );
 
     client.disconnect();
   });

@@ -22,9 +22,18 @@ function snapshot(): RuntimeSnapshot {
         label: "Task session",
         isActive: true,
         updatedAt: "2026-07-13T11:00:00.000Z",
+        spawnedCwd: "/workspace/dashclaw-worktrees/task-040",
+        spawnedWorkspaceDir: "/workspace/dashclaw",
+      },
+      {
+        key: "agent:coder:subagent:explicit-worktree",
+        agentId: "coder",
+        label: "Future explicit worktree session",
+        isActive: false,
+        updatedAt: "2026-07-13T10:00:00.000Z",
         worktree: {
           branch: "agent/task-040-session-worktree",
-          path: "/workspace/.worktrees/task-040",
+          path: "/workspace/explicit/task-040",
         },
       },
     ],
@@ -58,7 +67,8 @@ describe("agent session selection", () => {
     const stats = buildAgentStats(runtime, runtime.agents[0]!);
     expect(stats.activeSessions[0]?.key).toBe("agent:coder:subagent:newest");
     expect(stats.primarySession?.key).toBe("agent:coder:subagent:task-040");
-    expect(stats.primarySession?.worktree?.branch).toBe("agent/task-040-session-worktree");
+    expect(stats.primarySession?.spawnedCwd).toBe("/workspace/dashclaw-worktrees/task-040");
+    expect(stats.primarySession?.worktree).toBeUndefined();
   });
 
   it("falls back to the newest active session when the active task has no matching session", () => {
@@ -69,15 +79,22 @@ describe("agent session selection", () => {
   });
 });
 
-describe("session worktree search", () => {
-  const session = snapshot().sessions[1]!;
+describe("session execution context search", () => {
+  const directorySession = snapshot().sessions[1]!;
+  const explicitWorktreeSession = snapshot().sessions[2]!;
 
-  it("matches exact worktree branch and path fragments", () => {
-    expect(sessionMatchesQuery(session, "task-040-session-worktree")).toBe(true);
-    expect(sessionMatchesQuery(session, ".worktrees/task-040")).toBe(true);
+  it("matches reported working directory and workspace fragments", () => {
+    expect(sessionMatchesQuery(directorySession, "dashclaw-worktrees/task-040")).toBe(true);
+    expect(sessionMatchesQuery(directorySession, "/workspace/dashclaw")).toBe(true);
+  });
+
+  it("searches worktree fields only when explicit metadata exists", () => {
+    expect(sessionMatchesQuery(directorySession, "task-040-session-worktree")).toBe(false);
+    expect(sessionMatchesQuery(explicitWorktreeSession, "task-040-session-worktree")).toBe(true);
+    expect(sessionMatchesQuery(explicitWorktreeSession, "/workspace/explicit/task-040")).toBe(true);
   });
 
   it("does not treat an agent workspace as worktree metadata", () => {
-    expect(sessionMatchesQuery(session, "/workspace/base")).toBe(false);
+    expect(sessionMatchesQuery(directorySession, "/workspace/base")).toBe(false);
   });
 });

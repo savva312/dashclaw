@@ -4,7 +4,8 @@ import { useAppState } from "../../context";
 import { SessionPreviewPanel } from "./SessionPreviewPanel";
 import { AgentAvatar } from "./AgentAvatar";
 import { KindChip, StatusChip } from "./Chips";
-import { WorktreeMetadata } from "./WorktreeMetadata";
+import { ExecutionContext } from "./ExecutionContext";
+import { SessionOperationalBadges, SessionOperationalDetails } from "./SessionOperational";
 import {
   eventKindShort,
   eventKindTone,
@@ -118,7 +119,9 @@ export function AgentSessionDetail() {
         <StatusChip label={sessionStatusLabel(session)} tone={sessionStatusTone(session)} pulse={session.isActive} />
       </header>
 
-      <WorktreeMetadata worktree={session.worktree} variant="full" />
+      <SessionOperationalBadges session={session} />
+
+      <ExecutionContext session={session} variant="full" />
 
       <div className="detail-pill-row">
         <div className="detail-pill">
@@ -149,6 +152,8 @@ export function AgentSessionDetail() {
           </div>
         ) : null}
       </div>
+
+      <SessionOperationalDetails session={session} sessions={snapshot?.sessions ?? []} />
 
       <div className="detail-tabs">
         <SegmentedControl

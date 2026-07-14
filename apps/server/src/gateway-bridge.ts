@@ -8,7 +8,13 @@ import type {
   GatewayConnectionState,
   NodeSummary,
   RuntimeSnapshot,
+  SessionDiscoveryStatus,
   SessionSummary,
+  CompactionCheckpointSummary,
+  ContextBudgetSummary,
+  DeliveryContextSummary,
+  SessionOriginSummary,
+  TaskRuntimeSummary,
   TaskSummary,
   TimelineEventKind,
 } from "@dashclaw/runtime-model";
@@ -37,6 +43,7 @@ export class GatewayBridge {
   private debouncedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private liveSessions = new Map<string, LiveSessionActivity>();
   private assistantStreams = new AssistantStreamAccumulator();
+  private sessionDiscovery = new SessionDiscoveryState();
   private onSnapshot?: (snapshot: RuntimeSnapshot) => void;
   private onTimeline?: (event: ReturnType<RuntimeStore["appendTimeline"]>) => void;
 
@@ -180,11 +187,11 @@ export class GatewayBridge {
     }
     this.refreshInFlight = true;
     try {
-      const [health, agentsRes, sessionsRes, tasksRes, runningTasksRes, cronRes, nodesRes, approvalsRes] =
+      const [health, agentsRes, sessionDiscoveryResult, tasksRes, runningTasksRes, cronRes, nodesRes, approvalsRes] =
         await Promise.all([
           this.client.call<Record<string, unknown>>("health").catch(() => null),
           this.client.call<{ agents?: unknown[] }>("agents.list").catch(() => ({ agents: [] })),
-          this.client.call<{ sessions?: unknown[] }>("sessions.list").catch(() => ({ sessions: [] })),
+          fetchSessionPages((params) => this.client.call("sessions.list", params)),
           this.client.call<{ tasks?: unknown[] }>("tasks.list", { limit: 100 }).catch(() => ({ tasks: [] })),
           this.client
             .call<{ tasks?: unknown[] }>("tasks.list", { limit: 50, status: ["running", "queued"] })
@@ -195,7 +202,13 @@ export class GatewayBridge {
         ]);
 
       const agents = (agentsRes.agents ?? []).map(normalizeAgent);
-      const sessions = this.applyLiveSessions((sessionsRes.sessions ?? []).map(normalizeSession));
+      const selectedSessions = this.sessionDiscovery.select(sessionDiscoveryResult);
+      const sessions = this.applyLiveSessions(selectedSessions.sessions);
+      const sessionDiscoveryStatus: SessionDiscoveryStatus = {
+        ...sessionDiscoveryResult.status,
+        publishedSessions: sessions.length,
+        retainedLastComplete: selectedSessions.retainedLastComplete || undefined,
+      };
       const taskMap = new Map<string, TaskSummary>();
       for (const raw of [...(tasksRes.tasks ?? []), ...(runningTasksRes.tasks ?? [])]) {
         const task = normalizeTask(raw);
@@ -233,6 +246,7 @@ export class GatewayBridge {
         activeRunCount,
         pendingApprovalCount,
         failedTaskCount,
+        discovery: { sessions: sessionDiscoveryStatus },
         updatedAt: new Date().toISOString(),
       };
 
@@ -258,7 +272,7 @@ export class GatewayBridge {
   }
 
   private handleGatewayEvent(name: string, payload: unknown): void {
-    const p = (payload ?? {}) as Record<string, unknown>;
+    const p = normalizeGatewayEventPayload(name, payload);
     const kind = mapEventKind(name, p);
     if (!kind) return;
 
@@ -273,10 +287,10 @@ export class GatewayBridge {
       const summary = buildEventSummary(name, p);
 
       this.recordTimeline(kind, title, summary, undefined, {
-        agentId: pickString(p, "agentId"),
+        agentId: pickNestedString(p, "agentId"),
         sessionKey: resolveSessionKey(p),
-        runId: pickString(p, "runId"),
-        taskId: pickString(p, "taskId"),
+        runId: pickNestedString(p, "runId"),
+        taskId: pickNestedString(p, "taskId"),
         payload: redactValue(p) as Record<string, unknown>,
       });
     }
@@ -341,8 +355,9 @@ export class GatewayBridge {
         id: update.timelineId,
         kind: update.kind,
         timestamp: update.timestamp,
-        title: update.terminal ? "Assistant response" : "Assistant responding",
+        title: assistantTimelineTitle(update),
         summary: redactValue(update.text, MAX_ASSISTANT_TEXT) as string,
+        severity: update.terminalState === "error" ? "error" : update.terminalState === "aborted" ? "warn" : undefined,
         agentId: update.agentId,
         sessionKey: update.sessionKey,
         runId: update.runId,
@@ -350,6 +365,15 @@ export class GatewayBridge {
         payload: redactValue({
           responseId: update.responseId,
           streaming: !update.terminal,
+          state: update.terminalState ?? "delta",
+          sequence: update.sequence,
+          sequenceDiagnostic: update.sequenceDiagnostic,
+          replace: update.replace,
+          usage: update.usage,
+          stopReason: update.stopReason,
+          errorKind: update.errorKind,
+          errorMessage: update.errorMessage,
+          spawnedBy: update.spawnedBy,
         }) as Record<string, unknown>,
       });
       this.onTimeline?.(event);
@@ -402,6 +426,152 @@ function emptySnapshot(gatewayId: string): RuntimeSnapshot {
   };
 }
 
+const DEFAULT_SESSION_PAGE_LIMIT = 100;
+const DEFAULT_MAX_SESSION_PAGES = 25;
+const DEFAULT_MAX_SESSION_ROWS = 2_500;
+
+interface SessionsListPage {
+  sessions?: unknown[];
+  hasMore?: boolean;
+  nextOffset?: number;
+  total?: number;
+}
+
+interface SessionPageOptions {
+  pageLimit?: number;
+  maxPages?: number;
+  maxRows?: number;
+}
+
+interface SessionPageResult {
+  sessions: SessionSummary[];
+  status: Omit<SessionDiscoveryStatus, "publishedSessions" | "retainedLastComplete">;
+}
+
+type SessionsListCall = (params: { limit: number; offset: number }) => Promise<SessionsListPage>;
+
+async function fetchSessionPages(
+  call: SessionsListCall,
+  options: SessionPageOptions = {},
+): Promise<SessionPageResult> {
+  const pageLimit = positiveInteger(options.pageLimit, DEFAULT_SESSION_PAGE_LIMIT);
+  const maxPages = positiveInteger(options.maxPages, DEFAULT_MAX_SESSION_PAGES);
+  const maxRows = positiveInteger(options.maxRows, DEFAULT_MAX_SESSION_ROWS);
+  const sessionsByKey = new Map<string, SessionSummary>();
+  const sessionOrder: string[] = [];
+  const visitedOffsets = new Set<number>();
+  let offset = 0;
+  let pagesFetched = 0;
+  let rowsFetched = 0;
+  let expectedTotal: number | undefined;
+
+  const result = (
+    state: "complete" | "incomplete",
+    details: Pick<SessionDiscoveryStatus, "reason" | "nextOffset" | "message"> = {},
+  ): SessionPageResult => ({
+    sessions: sessionOrder.map((key) => sessionsByKey.get(key)!),
+    status: {
+      state,
+      degraded: state === "incomplete",
+      pagesFetched,
+      rowsFetched,
+      uniqueSessionsFetched: sessionOrder.length,
+      expectedTotal,
+      ...details,
+    },
+  });
+
+  while (true) {
+    visitedOffsets.add(offset);
+    let page: SessionsListPage;
+    try {
+      page = await call({ limit: pageLimit, offset });
+    } catch {
+      return result("incomplete", {
+        reason: "page-error",
+        nextOffset: offset,
+        message: `sessions.list failed on page ${pagesFetched + 1}; the snapshot may omit sessions`,
+      });
+    }
+
+    pagesFetched += 1;
+    if (Number.isSafeInteger(page.total) && (page.total ?? -1) >= 0) {
+      expectedTotal = page.total;
+    }
+
+    const rows = Array.isArray(page.sessions) ? page.sessions : [];
+    const remaining = maxRows - rowsFetched;
+    const acceptedRows = rows.slice(0, Math.max(0, remaining));
+    for (const raw of acceptedRows) {
+      const session = normalizeSession(raw);
+      if (!sessionsByKey.has(session.key)) sessionOrder.push(session.key);
+      // Preserve first-seen order while allowing a later duplicate to provide
+      // the value published for that key.
+      sessionsByKey.set(session.key, session);
+    }
+    rowsFetched += acceptedRows.length;
+
+    if (acceptedRows.length < rows.length || (rowsFetched >= maxRows && page.hasMore === true)) {
+      return result("incomplete", {
+        reason: "row-cap",
+        nextOffset: validOffset(page.nextOffset) ? page.nextOffset : undefined,
+        message: `session discovery stopped at the ${maxRows}-row safety cap`,
+      });
+    }
+
+    if (page.hasMore !== true) {
+      if (expectedTotal !== undefined && rowsFetched < expectedTotal) {
+        return result("incomplete", {
+          reason: "inconsistent-page",
+          message: `sessions.list ended after ${rowsFetched} rows but reported ${expectedTotal} total`,
+        });
+      }
+      return result("complete");
+    }
+
+    if (pagesFetched >= maxPages) {
+      return result("incomplete", {
+        reason: "page-cap",
+        nextOffset: validOffset(page.nextOffset) ? page.nextOffset : undefined,
+        message: `session discovery stopped at the ${maxPages}-page safety cap`,
+      });
+    }
+
+    const nextOffset = page.nextOffset;
+    if (!validOffset(nextOffset) || nextOffset <= offset || visitedOffsets.has(nextOffset)) {
+      return result("incomplete", {
+        reason: "invalid-next-offset",
+        nextOffset: validOffset(nextOffset) ? nextOffset : undefined,
+        message: "sessions.list reported more rows without a new forward offset",
+      });
+    }
+    offset = nextOffset;
+  }
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return Number.isSafeInteger(value) && (value ?? 0) > 0 ? value! : fallback;
+}
+
+function validOffset(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+class SessionDiscoveryState {
+  private lastComplete: SessionSummary[] | null = null;
+
+  select(result: SessionPageResult): { sessions: SessionSummary[]; retainedLastComplete: boolean } {
+    if (result.status.state === "complete") {
+      this.lastComplete = result.sessions;
+      return { sessions: result.sessions, retainedLastComplete: false };
+    }
+    if (this.lastComplete) {
+      return { sessions: this.lastComplete, retainedLastComplete: true };
+    }
+    return { sessions: result.sessions, retainedLastComplete: false };
+  }
+}
+
 function rankTask(task: TaskSummary): number {
   if (task.status === "running") return 100;
   if (task.status === "queued") return 90;
@@ -421,24 +591,28 @@ function isRecentSession(updatedAt?: string): boolean {
 }
 
 function normalizeAgent(raw: unknown): AgentSummary {
-  const a = raw as Record<string, unknown>;
+  const a = asRecord(raw);
+  const runtime = normalizeRuntimeIdentity(a.runtime ?? a.agentRuntime);
   return {
     id: String(a.id ?? a.agentId ?? "unknown"),
     name: pickString(a, "name", "label"),
-    model: pickString(a, "model"),
-    runtime: pickString(a, "runtime", "agentRuntime"),
+    model: normalizeModel(a.model),
+    runtime: runtime.id,
+    runtimeSource: runtime.source,
+    thinkingDefault: pickString(a, "thinkingDefault"),
     workspace: pickString(a, "workspace"),
   };
 }
 
 function normalizeSession(raw: unknown): SessionSummary {
-  const s = raw as Record<string, unknown>;
+  const s = asRecord(raw);
   const key = String(s.key ?? s.sessionKey ?? "unknown");
   const agentId = pickString(s, "agentId") ?? parseAgentIdFromKey(key);
   const subagentRunState = pickString(s, "subagentRunState");
   const status = pickString(s, "status");
-  const processing = Boolean(s.processing);
-  const hasActiveRun = Boolean(s.hasActiveRun);
+  const processing = pickBoolean(s, "processing") ?? false;
+  const hasActiveRun = pickBoolean(s, "hasActiveRun") ?? false;
+  const agentRuntime = normalizeRuntimeIdentity(s.agentRuntime);
   const isActive =
     hasActiveRun ||
     status === "running" ||
@@ -446,7 +620,7 @@ function normalizeSession(raw: unknown): SessionSummary {
     processing ||
     subagentRunState === "running" ||
     subagentRunState === "active" ||
-    Boolean(s.isActive);
+    (pickBoolean(s, "isActive") ?? false);
   const rawWorktree =
     s.worktree && typeof s.worktree === "object" && !Array.isArray(s.worktree)
       ? (s.worktree as Record<string, unknown>)
@@ -454,7 +628,7 @@ function normalizeSession(raw: unknown): SessionSummary {
   const worktree = rawWorktree
     ? {
         id: pickString(rawWorktree, "id"),
-        path: pickString(rawWorktree, "path") ?? pickString(s, "spawnedCwd"),
+        path: pickString(rawWorktree, "path"),
         branch: pickString(rawWorktree, "branch"),
         repoRoot: pickString(rawWorktree, "repoRoot"),
       }
@@ -462,25 +636,55 @@ function normalizeSession(raw: unknown): SessionSummary {
 
   return {
     key,
+    sessionId: pickString(s, "sessionId"),
+    kind: pickString(s, "kind"),
     agentId,
     parentSessionKey: pickString(s, "parentSessionKey"),
     spawnedBy: pickString(s, "spawnedBy"),
     ownerSessionKey: pickString(s, "ownerSessionKey"),
+    spawnDepth: pickNumber(s, "spawnDepth"),
+    subagentRole: pickString(s, "subagentRole"),
+    subagentControlScope: pickString(s, "subagentControlScope"),
+    forkedFromParent: pickBoolean(s, "forkedFromParent"),
     label: pickString(s, "label", "displayName", "name"),
-    model: pickString(s, "model"),
-    agentRuntime: pickString(s, "agentRuntime"),
-    updatedAt: normalizeTimestamp(pickString(s, "updatedAt", "lastInteractionAt")),
-    lastInteractionAt: normalizeTimestamp(pickString(s, "lastInteractionAt")),
+    model: normalizeModel(s.model),
+    modelProvider: pickString(s, "modelProvider"),
+    agentRuntime: agentRuntime.id,
+    agentRuntimeSource: agentRuntime.source,
+    startedAt: normalizeTimestamp(s.startedAt),
+    endedAt: normalizeTimestamp(s.endedAt),
+    runtimeMs: pickNumber(s, "runtimeMs"),
+    updatedAt: normalizeTimestamp(s.updatedAt ?? s.lastInteractionAt),
+    lastInteractionAt: normalizeTimestamp(s.lastInteractionAt),
     status,
     isActive,
+    hasActiveRun: pickBoolean(s, "hasActiveRun"),
+    hasActiveSubagentRun: pickBoolean(s, "hasActiveSubagentRun"),
+    subagentRunState,
+    abortedLastRun: pickBoolean(s, "abortedLastRun"),
     currentRunId: pickString(s, "runId", "currentRunId"),
     currentTool: pickString(s, "currentTool"),
+    inputTokens: pickNumber(s, "inputTokens"),
+    outputTokens: pickNumber(s, "outputTokens"),
+    totalTokens: pickNumber(s, "totalTokens"),
+    contextTokens: pickNumber(s, "contextTokens"),
+    estimatedCostUsd: pickNumber(s, "estimatedCostUsd"),
+    contextBudgetStatus: normalizeContextBudget(s.contextBudgetStatus),
+    compactionCheckpointCount: pickNumber(s, "compactionCheckpointCount"),
+    latestCompactionCheckpoint: normalizeCompactionCheckpoint(
+      s.latestCompactionCheckpoint ?? s.compactionCheckpoint,
+    ),
+    deliveryContext: normalizeDeliveryContext(s.deliveryContext),
+    origin: normalizeSessionOrigin(s.origin),
+    spawnedWorkspaceDir: pickString(s, "spawnedWorkspaceDir"),
+    spawnedCwd: pickString(s, "spawnedCwd"),
     worktree,
   };
 }
 
 function normalizeTask(raw: unknown): TaskSummary {
-  const t = raw as Record<string, unknown>;
+  const t = asRecord(raw);
+  const error = normalizeError(t.error);
   return {
     id: String(t.id ?? t.taskId ?? randomUUID()),
     status: (t.status as TaskSummary["status"]) ?? "queued",
@@ -489,9 +693,20 @@ function normalizeTask(raw: unknown): TaskSummary {
     agentId: pickString(t, "agentId"),
     sessionKey: pickString(t, "sessionKey"),
     runId: pickString(t, "runId"),
-    startedAt: normalizeTimestamp(pickString(t, "startedAt")),
-    endedAt: normalizeTimestamp(pickString(t, "endedAt")),
-    error: pickString(t, "error"),
+    ownerKey: pickString(t, "ownerKey"),
+    childSessionKey: pickString(t, "childSessionKey"),
+    sourceId: pickString(t, "sourceId"),
+    flowId: pickString(t, "flowId"),
+    createdAt: normalizeTimestamp(t.createdAt),
+    updatedAt: normalizeTimestamp(t.updatedAt),
+    startedAt: normalizeTimestamp(t.startedAt),
+    endedAt: normalizeTimestamp(t.endedAt),
+    runtime: normalizeTaskRuntime(t.runtime),
+    progressSummary: sanitizeTaskText(pickString(t, "progressSummary")),
+    terminalSummary: sanitizeTaskText(pickString(t, "terminalSummary")),
+    error: sanitizeTaskText(error.message),
+    errorCode: sanitizeTaskText(error.code),
+    errorKind: sanitizeTaskText(error.kind),
   };
 }
 
@@ -536,13 +751,163 @@ function parseAgentIdFromKey(key: string): string | undefined {
   return match?.[1];
 }
 
-function normalizeTimestamp(value?: string): string | undefined {
-  if (!value) return undefined;
-  const n = Number(value);
-  if (Number.isFinite(n) && n > 1_000_000_000_000) {
-    return new Date(n).toISOString();
+function normalizeTimestamp(value: unknown): string | undefined {
+  if (typeof value !== "string" && typeof value !== "number") return undefined;
+  if (typeof value === "string" && value.trim().length === 0) return undefined;
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (Number.isFinite(numeric) && numeric >= 1_000_000_000_000) {
+    const date = new Date(numeric);
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
   }
-  return value;
+  if (typeof value !== "string") return undefined;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? undefined : new Date(parsed).toISOString();
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function normalizeModel(value: unknown): string | undefined {
+  if (typeof value === "string" && value.length > 0) return value;
+  return pickString(asRecord(value), "primary", "id", "name");
+}
+
+function normalizeRuntimeIdentity(value: unknown): { id?: string; source?: string } {
+  if (typeof value === "string" && value.length > 0) return { id: value };
+  const runtime = asRecord(value);
+  return { id: pickString(runtime, "id", "runtime"), source: pickString(runtime, "source") };
+}
+
+function normalizeContextBudget(value: unknown): ContextBudgetSummary | undefined {
+  if (typeof value === "string" && value.length > 0) return { status: value };
+  const budget = asRecord(value);
+  if (Object.keys(budget).length === 0) return undefined;
+  const result: ContextBudgetSummary = {
+    schemaVersion: pickNumber(budget, "schemaVersion"),
+    source: pickString(budget, "source"),
+    updatedAt: normalizeTimestamp(budget.updatedAt),
+    provider: pickString(budget, "provider"),
+    model: pickString(budget, "model"),
+    route: pickString(budget, "route"),
+    shouldCompact: pickBoolean(budget, "shouldCompact"),
+    estimatedPromptTokens: pickNumber(budget, "estimatedPromptTokens"),
+    contextTokenBudget: pickNumber(budget, "contextTokenBudget"),
+    promptBudgetBeforeReserve: pickNumber(budget, "promptBudgetBeforeReserve"),
+    reserveTokens: pickNumber(budget, "reserveTokens"),
+    effectiveReserveTokens: pickNumber(budget, "effectiveReserveTokens"),
+    remainingPromptBudgetTokens: pickNumber(budget, "remainingPromptBudgetTokens"),
+    overflowTokens: pickNumber(budget, "overflowTokens"),
+    toolResultReducibleChars: pickNumber(budget, "toolResultReducibleChars"),
+    messageCount: pickNumber(budget, "messageCount"),
+    unwindowedMessageCount: pickNumber(budget, "unwindowedMessageCount"),
+    sessionId: pickString(budget, "sessionId"),
+    status: pickString(budget, "status", "level"),
+    reason: pickString(budget, "reason"),
+    budgetTokens: pickNumber(budget, "budgetTokens", "limitTokens"),
+    remainingTokens: pickNumber(budget, "remainingTokens"),
+    usedPercent: pickNumber(budget, "usedPercent", "percentUsed"),
+  };
+  return hasDefinedValue(result) ? result : undefined;
+}
+
+function normalizeCompactionCheckpoint(value: unknown): CompactionCheckpointSummary | undefined {
+  const checkpoint = asRecord(value);
+  if (Object.keys(checkpoint).length === 0) return undefined;
+  const result: CompactionCheckpointSummary = {
+    checkpointId: pickString(checkpoint, "checkpointId"),
+    createdAt: normalizeTimestamp(checkpoint.createdAt),
+    timestamp: normalizeTimestamp(checkpoint.timestamp ?? checkpoint.at ?? checkpoint.createdAt),
+    reason: pickString(checkpoint, "reason"),
+    tokensBefore: pickNumber(checkpoint, "tokensBefore"),
+    tokensAfter: pickNumber(checkpoint, "tokensAfter"),
+  };
+  return hasDefinedValue(result) ? result : undefined;
+}
+
+function normalizeDeliveryContext(value: unknown): DeliveryContextSummary | undefined {
+  const context = asRecord(value);
+  if (Object.keys(context).length === 0) return undefined;
+  const result: DeliveryContextSummary = {
+    channel: pickString(context, "channel"),
+    to: pickString(context, "to"),
+    accountId: pickString(context, "accountId"),
+    threadId: pickStringOrNumber(context, "threadId"),
+  };
+  return hasDefinedValue(result) ? result : undefined;
+}
+
+function normalizeSessionOrigin(value: unknown): SessionOriginSummary | undefined {
+  const origin = asRecord(value);
+  if (Object.keys(origin).length === 0) return undefined;
+  const nativeChannelId = pickStringOrNumber(origin, "nativeChannelId", "channelId");
+  const result: SessionOriginSummary = {
+    provider: pickString(origin, "provider"),
+    surface: pickString(origin, "surface"),
+    chatType: pickString(origin, "chatType"),
+    accountId: pickString(origin, "accountId"),
+    nativeChannelId,
+    channelId: nativeChannelId,
+    threadId: pickStringOrNumber(origin, "threadId"),
+  };
+  return hasDefinedValue(result) ? result : undefined;
+}
+
+function normalizeTaskRuntime(value: unknown): TaskRuntimeSummary | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return { runtimeMs: value };
+  if (typeof value === "string" && value.length > 0) return { id: value };
+  const runtime = asRecord(value);
+  if (Object.keys(runtime).length === 0) return undefined;
+  const result: TaskRuntimeSummary = {
+    id: pickString(runtime, "id"),
+    source: pickString(runtime, "source"),
+    startedAt: normalizeTimestamp(runtime.startedAt),
+    endedAt: normalizeTimestamp(runtime.endedAt),
+    runtimeMs: pickNumber(runtime, "runtimeMs", "durationMs"),
+  };
+  return hasDefinedValue(result) ? result : undefined;
+}
+
+function normalizeError(value: unknown): { message?: string; code?: string; kind?: string } {
+  if (typeof value === "string" && value.length > 0) return { message: value };
+  const error = asRecord(value);
+  return {
+    message: pickString(error, "message", "summary"),
+    code: pickString(error, "code"),
+    kind: pickString(error, "kind", "name"),
+  };
+}
+
+function sanitizeTaskText(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const sanitized = redactValue(value, 2_000);
+  return typeof sanitized === "string" ? sanitized : undefined;
+}
+
+function hasDefinedValue(value: object): boolean {
+  return Object.values(value).some((entry) => entry !== undefined);
+}
+
+/**
+ * OpenClaw's `agent` event is an envelope: routing fields live at the top level
+ * while stream-specific fields live in `data`. Consumers should not have to
+ * know which half of the envelope owns a field. Keep the original `data`
+ * object for inspection, but expose its fields through one normalized view.
+ */
+function normalizeGatewayEventPayload(name: string, payload: unknown): Record<string, unknown> {
+  const envelope = isRecord(payload) ? payload : {};
+  if (name !== "agent" || !isRecord(envelope.data)) return envelope;
+  return {
+    ...envelope.data,
+    ...envelope,
+    data: envelope.data,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function mapEventKind(name: string, p: Record<string, unknown>): TimelineEventKind | null {
@@ -597,6 +962,8 @@ function buildEventTitle(name: string, p: Record<string, unknown>): string {
     const state = pickString(p, "state") ?? "update";
     if (state === "delta") return "Chat streaming";
     if (state === "final") return "Chat completed";
+    if (state === "aborted") return "Chat aborted";
+    if (state === "error") return "Chat failed";
     if (state === "started") return "Chat started";
     return `Chat ${state}`;
   }
@@ -627,10 +994,42 @@ function buildEventSummary(name: string, p: Record<string, unknown>): string | u
   return pickString(p, "summary", "message", "status") ?? undefined;
 }
 
+function assistantTimelineTitle(update: AssistantStreamUpdate): string {
+  if (!update.terminal) return "Assistant responding";
+  if (update.terminalState === "aborted") return "Assistant response aborted";
+  if (update.terminalState === "error") return "Assistant response failed";
+  return "Assistant response";
+}
+
 function pickString(obj: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const k of keys) {
     const v = obj[k];
     if (typeof v === "string" && v.length > 0) return v;
+  }
+  return undefined;
+}
+
+function pickNumber(obj: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function pickBoolean(obj: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === "boolean") return value;
+  }
+  return undefined;
+}
+
+function pickStringOrNumber(obj: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === "string" && value.length > 0) return value;
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
   }
   return undefined;
 }
@@ -647,16 +1046,26 @@ interface AssistantStreamState {
   responseId?: string;
   agentId?: string;
   taskId?: string;
+  spawnedBy?: string;
   kind: "chat" | "agent.assistant";
+  sequence?: number;
 }
 
 interface AssistantStreamUpdate extends AssistantStreamState {
   terminal: boolean;
+  terminalState?: string;
+  sequenceDiagnostic?: "gap" | "regression" | "duplicate";
+  replace?: boolean;
+  usage?: unknown;
+  stopReason?: string;
+  errorKind?: string;
+  errorMessage?: string;
 }
 
 class AssistantStreamAccumulator {
   private streams = new Map<string, AssistantStreamState>();
   private activeResponseByScope = new Map<string, string>();
+  private terminalKeys = new Map<string, true>();
 
   consume(name: string, payload: Record<string, unknown>): AssistantStreamUpdate | null {
     const sessionKey = resolveSessionKey(payload);
@@ -664,50 +1073,83 @@ class AssistantStreamAccumulator {
 
     if (!isAssistantTransportEvent(name, payload)) return null;
 
-    const runId = pickNestedString(payload, "runId") ?? pickString(payload, "runId");
+    const runId = pickNestedString(payload, "runId");
     const responseId = pickNestedString(payload, "responseId", "messageId", "id");
     const scope = `${sessionKey}\u0000run:${runId ?? "current"}`;
     const key = responseId
-      ? `${sessionKey}\u0000response:${responseId}`
+      ? `${scope}\u0000response:${responseId}`
       : scope;
+    const terminalState = terminalStateFor(name, payload);
+    const terminal = terminalState !== undefined;
+    const stableIdentity = Boolean(runId || responseId);
+    if (this.terminalKeys.has(key)) {
+      if (stableIdentity || terminal) return null;
+      this.terminalKeys.delete(key);
+    }
+    let rolloverState: AssistantStreamState | undefined;
     if (responseId) {
       const previousKey = this.activeResponseByScope.get(scope);
-      if (previousKey && previousKey !== key) this.streams.delete(previousKey);
+      if (previousKey && previousKey !== key) {
+        const previous = this.streams.get(previousKey);
+        if (previous) {
+          rolloverState = { ...previous, text: "", responseId, sequence: undefined };
+        }
+        this.deleteStream(previousKey);
+      }
       this.streams.delete(scope);
       this.activeResponseByScope.set(scope, key);
     }
-    const terminal = isTerminalBoundary(name, payload);
     const chunk = extractAssistantText(payload);
-    const existing = this.streams.get(key);
+    const existing = this.streams.get(key) ?? rolloverState;
+    const sequence = pickNestedNumber(payload, "seq", "sequence");
+    const sequenceDiagnostic = compareSequence(existing?.sequence, sequence);
+    const replace = pickNestedBoolean(payload, "replace") ?? false;
 
-    if (!chunk && !existing) return null;
+    if (!chunk && !existing && !terminal) return null;
 
     const state: AssistantStreamState = existing ?? {
       timelineId: randomUUID(),
-      timestamp: new Date().toISOString(),
+      timestamp: eventTimestamp(payload),
       text: "",
       sessionKey,
       runId,
       responseId,
-      agentId: pickString(payload, "agentId"),
-      taskId: pickString(payload, "taskId"),
+      agentId: pickNestedString(payload, "agentId"),
+      taskId: pickNestedString(payload, "taskId"),
+      spawnedBy: pickNestedString(payload, "spawnedBy"),
       kind: name === "chat" ? "chat" : "agent.assistant",
     };
 
-    if (chunk) state.text = mergeAssistantText(state.text, chunk).slice(0, MAX_ASSISTANT_TEXT);
+    const authoritativeTerminalText = terminal && Boolean(pickString(payload, "text", "content"));
+    if (chunk && (!sequenceDiagnostic || sequenceDiagnostic === "gap" || authoritativeTerminalText)) {
+      state.text = (replace ? chunk : mergeAssistantText(state.text, chunk)).slice(0, MAX_ASSISTANT_TEXT);
+    }
+    if (sequence !== undefined && (state.sequence === undefined || sequence > state.sequence)) state.sequence = sequence;
     if (!state.text) {
-      if (terminal) this.streams.delete(key);
-      return null;
+      if (!terminal) return null;
+      state.text = terminalFallbackText(terminalState, payload);
     }
 
     if (terminal) {
-      this.streams.delete(key);
+      this.deleteStream(key);
       if (this.activeResponseByScope.get(scope) === key) this.activeResponseByScope.delete(scope);
+      this.rememberTerminal(key);
     } else {
       this.streams.set(key, state);
       this.evictOldest();
     }
-    return { ...state, terminal };
+    return {
+      ...state,
+      terminal,
+      terminalState,
+      sequence: sequence ?? state.sequence,
+      sequenceDiagnostic,
+      replace,
+      usage: pickNestedValue(payload, "usage"),
+      stopReason: pickNestedString(payload, "stopReason"),
+      errorKind: pickNestedString(payload, "errorKind"),
+      errorMessage: pickNestedString(payload, "errorMessage"),
+    };
   }
 
   finalizeBoundary(name: string, payload: Record<string, unknown>): AssistantStreamUpdate[] {
@@ -717,8 +1159,9 @@ class AssistantStreamAccumulator {
     const completed: AssistantStreamUpdate[] = [];
     for (const [key, state] of this.streams) {
       if (state.sessionKey !== sessionKey) continue;
-      completed.push({ ...state, terminal: true });
-      this.streams.delete(key);
+      completed.push({ ...state, terminal: true, terminalState: terminalStateFor(name, payload) });
+      this.deleteStream(key);
+      this.rememberTerminal(key);
     }
     for (const scope of this.activeResponseByScope.keys()) {
       if (scope.startsWith(`${sessionKey}\u0000`)) this.activeResponseByScope.delete(scope);
@@ -729,13 +1172,35 @@ class AssistantStreamAccumulator {
   clear(): void {
     this.streams.clear();
     this.activeResponseByScope.clear();
+    this.terminalKeys.clear();
+  }
+
+  stats(): { active: number; terminal: number } {
+    return { active: this.streams.size, terminal: this.terminalKeys.size };
   }
 
   private evictOldest(): void {
     while (this.streams.size > MAX_ASSISTANT_STREAMS) {
       const oldest = this.streams.keys().next().value as string | undefined;
       if (!oldest) return;
-      this.streams.delete(oldest);
+      this.deleteStream(oldest);
+    }
+  }
+
+  private deleteStream(key: string): void {
+    this.streams.delete(key);
+    for (const [scope, activeKey] of this.activeResponseByScope) {
+      if (activeKey === key) this.activeResponseByScope.delete(scope);
+    }
+  }
+
+  private rememberTerminal(key: string): void {
+    this.terminalKeys.delete(key);
+    this.terminalKeys.set(key, true);
+    while (this.terminalKeys.size > MAX_ASSISTANT_STREAMS * 2) {
+      const oldest = this.terminalKeys.keys().next().value as string | undefined;
+      if (!oldest) return;
+      this.terminalKeys.delete(oldest);
     }
   }
 }
@@ -783,6 +1248,58 @@ function pickNestedString(payload: Record<string, unknown>, ...keys: string[]): 
   return undefined;
 }
 
+function pickNestedNumber(payload: Record<string, unknown>, ...keys: string[]): number | undefined {
+  const value = pickNestedValue(payload, ...keys);
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function pickNestedBoolean(payload: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+  const value = pickNestedValue(payload, ...keys);
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function pickNestedValue(payload: Record<string, unknown>, ...keys: string[]): unknown {
+  for (const key of keys) {
+    if (payload[key] !== undefined) return payload[key];
+  }
+  for (const container of ["message", "data", "chunk", "response"]) {
+    const nested = payload[container];
+    if (!isRecord(nested)) continue;
+    for (const key of keys) {
+      if (nested[key] !== undefined) return nested[key];
+    }
+  }
+  return undefined;
+}
+
+function compareSequence(
+  previous: number | undefined,
+  incoming: number | undefined,
+): AssistantStreamUpdate["sequenceDiagnostic"] {
+  if (previous === undefined || incoming === undefined) return undefined;
+  if (incoming === previous) return "duplicate";
+  if (incoming < previous) return "regression";
+  if (incoming > previous + 1) return "gap";
+  return undefined;
+}
+
+function terminalFallbackText(state: string | undefined, payload: Record<string, unknown>): string {
+  const errorMessage = pickNestedString(payload, "errorMessage", "message");
+  if (state === "error") return errorMessage ? `Response failed: ${errorMessage}` : "Response failed";
+  if (state === "aborted") return "Response aborted";
+  return "Response completed without text";
+}
+
+function eventTimestamp(payload: Record<string, unknown>): string {
+  const value = pickNestedValue(payload, "ts", "timestamp");
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) return date.toISOString();
+  }
+  if (typeof value === "string" && !Number.isNaN(Date.parse(value))) return new Date(value).toISOString();
+  return new Date().toISOString();
+}
+
 function mergeAssistantText(current: string, incoming: string): string {
   if (!current) return incoming;
   if (!incoming || current === incoming || current.endsWith(incoming)) return current;
@@ -806,25 +1323,33 @@ function isAssistantSessionTerminalBoundary(name: string, payload: Record<string
 }
 
 function isTerminalBoundary(name: string, payload: Record<string, unknown>): boolean {
+  return terminalStateFor(name, payload) !== undefined;
+}
+
+const TERMINAL_SESSION_STATES = new Set([
+  "final",
+  "done",
+  "completed",
+  "complete",
+  "failed",
+  "error",
+  "killed",
+  "timeout",
+  "timed_out",
+  "cancelled",
+  "canceled",
+  "aborted",
+  "end",
+  "ended",
+  "stop",
+  "stopped",
+]);
+
+function terminalStateFor(name: string, payload: Record<string, unknown>): string | undefined {
   const state = pickNestedString(payload, "state", "status", "phase", "event");
-  if (!state) return name === "shutdown";
-  return new Set([
-    "final",
-    "done",
-    "completed",
-    "complete",
-    "failed",
-    "error",
-    "timeout",
-    "timed_out",
-    "cancelled",
-    "canceled",
-    "aborted",
-    "end",
-    "ended",
-    "stop",
-    "stopped",
-  ]).has(state.toLowerCase());
+  if (!state) return name === "shutdown" ? "shutdown" : undefined;
+  const normalized = state.toLowerCase();
+  return TERMINAL_SESSION_STATES.has(normalized) ? normalized : undefined;
 }
 
 interface LiveSessionActivity {
@@ -881,7 +1406,7 @@ function updateLiveSessionFromEvent(
       });
       return true;
     }
-    if (status === "done" || status === "failed" || status === "timeout") {
+    if (status && isLiveSessionTerminalState(status)) {
       return liveSessions.delete(sessionKey);
     }
     return false;
@@ -898,7 +1423,7 @@ function updateLiveSessionFromEvent(
       });
       return true;
     }
-    if (state === "final" || state === "error") {
+    if (state === "final" || state === "error" || state === "aborted") {
       return liveSessions.delete(sessionKey);
     }
     return false;
@@ -907,7 +1432,10 @@ function updateLiveSessionFromEvent(
   if (name === "agent") {
     const stream = pickString(payload, "stream");
     const phase = pickString(payload, "phase");
-    if (stream === "tool" || (stream === "lifecycle" && phase !== "end" && phase !== "done")) {
+    if (stream === "lifecycle" && phase && isLiveSessionTerminalState(phase)) {
+      return liveSessions.delete(sessionKey);
+    }
+    if (stream === "tool" || stream === "lifecycle") {
       liveSessions.set(sessionKey, {
         agentId,
         status: "running",
@@ -915,9 +1443,6 @@ function updateLiveSessionFromEvent(
         currentTool: stream === "tool" ? pickString(payload, "toolName", "name") : undefined,
       });
       return true;
-    }
-    if (stream === "lifecycle" && (phase === "end" || phase === "done")) {
-      return liveSessions.delete(sessionKey);
     }
     return false;
   }
@@ -933,6 +1458,10 @@ function updateLiveSessionFromEvent(
   }
 
   return false;
+}
+
+function isLiveSessionTerminalState(state: string): boolean {
+  return TERMINAL_SESSION_STATES.has(state.toLowerCase());
 }
 
 function applyLiveSessions(
@@ -962,9 +1491,19 @@ function applyLiveSessions(
 }
 
 export const gatewayBridgeTestUtils = {
+  normalizeAgent,
   normalizeSession,
+  normalizeTask,
+  normalizeGatewayEventPayload,
+  mapEventKind,
+  buildEventTitle,
   mergeAssistantText,
   createAssistantStreamAccumulator: () => new AssistantStreamAccumulator(),
+  fetchSessionPages,
+  createSessionDiscoveryTracker: () => {
+    const state = new SessionDiscoveryState();
+    return { select: (result: SessionPageResult) => state.select(result) };
+  },
   createLiveSessionTracker: () => {
     const liveSessions = new Map<string, LiveSessionActivity>();
     return {

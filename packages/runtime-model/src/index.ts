@@ -47,7 +47,62 @@ export interface AgentSummary {
   name?: string;
   model?: string;
   runtime?: string;
+  runtimeSource?: string;
+  thinkingDefault?: string;
   workspace?: string;
+}
+
+export interface ContextBudgetSummary {
+  schemaVersion?: number;
+  source?: string;
+  updatedAt?: string;
+  provider?: string;
+  model?: string;
+  route?: string;
+  shouldCompact?: boolean;
+  estimatedPromptTokens?: number;
+  contextTokenBudget?: number;
+  promptBudgetBeforeReserve?: number;
+  reserveTokens?: number;
+  effectiveReserveTokens?: number;
+  remainingPromptBudgetTokens?: number;
+  overflowTokens?: number;
+  toolResultReducibleChars?: number;
+  messageCount?: number;
+  unwindowedMessageCount?: number;
+  sessionId?: string;
+  /** Legacy compatibility aliases retained for older Gateway payloads. */
+  status?: string;
+  reason?: string;
+  budgetTokens?: number;
+  remainingTokens?: number;
+  usedPercent?: number;
+}
+
+export interface CompactionCheckpointSummary {
+  checkpointId?: string;
+  createdAt?: string;
+  timestamp?: string;
+  reason?: string;
+  tokensBefore?: number;
+  tokensAfter?: number;
+}
+
+export interface DeliveryContextSummary {
+  channel?: string;
+  to?: string;
+  accountId?: string;
+  threadId?: string;
+}
+
+export interface SessionOriginSummary {
+  provider?: string;
+  surface?: string;
+  chatType?: string;
+  accountId?: string;
+  nativeChannelId?: string;
+  channelId?: string;
+  threadId?: string;
 }
 
 export interface SessionWorktreeSummary {
@@ -59,20 +114,57 @@ export interface SessionWorktreeSummary {
 
 export interface SessionSummary {
   key: string;
+  sessionId?: string;
+  kind?: string;
   agentId?: string;
   parentSessionKey?: string;
   spawnedBy?: string;
   ownerSessionKey?: string;
+  spawnDepth?: number;
+  subagentRole?: string;
+  subagentControlScope?: string;
+  forkedFromParent?: boolean;
   label?: string;
   model?: string;
+  modelProvider?: string;
   agentRuntime?: string;
+  agentRuntimeSource?: string;
+  startedAt?: string;
+  endedAt?: string;
+  runtimeMs?: number;
   updatedAt?: string;
   lastInteractionAt?: string;
   status?: string;
   isActive?: boolean;
+  hasActiveRun?: boolean;
+  hasActiveSubagentRun?: boolean;
+  subagentRunState?: string;
+  abortedLastRun?: boolean;
   currentRunId?: string;
   currentTool?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  contextTokens?: number;
+  estimatedCostUsd?: number;
+  contextBudgetStatus?: ContextBudgetSummary;
+  compactionCheckpointCount?: number;
+  latestCompactionCheckpoint?: CompactionCheckpointSummary;
+  /** Legacy snapshot compatibility. New Gateway rows use latestCompactionCheckpoint. */
+  compactionCheckpoint?: CompactionCheckpointSummary;
+  deliveryContext?: DeliveryContextSummary;
+  origin?: SessionOriginSummary;
+  spawnedWorkspaceDir?: string;
+  spawnedCwd?: string;
   worktree?: SessionWorktreeSummary;
+}
+
+export interface TaskRuntimeSummary {
+  id?: string;
+  source?: string;
+  startedAt?: string;
+  endedAt?: string;
+  runtimeMs?: number;
 }
 
 export interface TaskSummary {
@@ -83,9 +175,20 @@ export interface TaskSummary {
   agentId?: string;
   sessionKey?: string;
   runId?: string;
+  ownerKey?: string;
+  childSessionKey?: string;
+  sourceId?: string;
+  flowId?: string;
+  createdAt?: string;
+  updatedAt?: string;
   startedAt?: string;
   endedAt?: string;
+  runtime?: TaskRuntimeSummary;
+  progressSummary?: string;
+  terminalSummary?: string;
   error?: string;
+  errorCode?: string;
+  errorKind?: string;
 }
 
 export interface CronJobSummary {
@@ -125,6 +228,31 @@ export interface NodeSummary {
   platform?: string;
 }
 
+export type SessionDiscoveryIncompleteReason =
+  | "page-error"
+  | "page-cap"
+  | "row-cap"
+  | "invalid-next-offset"
+  | "inconsistent-page";
+
+export interface SessionDiscoveryStatus {
+  state: "complete" | "incomplete";
+  degraded: boolean;
+  pagesFetched: number;
+  rowsFetched: number;
+  uniqueSessionsFetched: number;
+  publishedSessions: number;
+  expectedTotal?: number;
+  nextOffset?: number;
+  reason?: SessionDiscoveryIncompleteReason;
+  retainedLastComplete?: boolean;
+  message?: string;
+}
+
+export interface RuntimeDiscoveryStatus {
+  sessions: SessionDiscoveryStatus;
+}
+
 export interface TimelineEvent {
   id: string;
   kind: TimelineEventKind;
@@ -152,6 +280,7 @@ export interface RuntimeSnapshot {
   activeRunCount: number;
   pendingApprovalCount: number;
   failedTaskCount: number;
+  discovery?: RuntimeDiscoveryStatus;
   updatedAt: string;
 }
 

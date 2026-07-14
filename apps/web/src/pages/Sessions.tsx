@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useAppState } from "../context";
 import { fetchSessionPreview } from "../api";
 import { formatCompactTitle } from "../lib/format";
-import { WorktreeMetadata } from "./agents/WorktreeMetadata";
+import { ExecutionContext } from "./agents/ExecutionContext";
 
 export function SessionsPage() {
   const { snapshot } = useAppState();
@@ -42,7 +42,7 @@ export function SessionsPage() {
           ) : (
             <table className="table">
               <thead>
-                <tr><th>Session</th><th>Agent</th><th>Status</th><th>Working copy</th></tr>
+                <tr><th>Session</th><th>Agent</th><th>Status</th><th>Execution context</th></tr>
               </thead>
               <tbody>
                 {sessions.map((s) => (
@@ -61,7 +61,7 @@ export function SessionsPage() {
                         {s.isActive ? "active" : "idle"}
                       </span>
                     </td>
-                    <td><WorktreeMetadata worktree={s.worktree} /></td>
+                    <td><ExecutionContext session={s} /></td>
                   </tr>
                 ))}
               </tbody>
