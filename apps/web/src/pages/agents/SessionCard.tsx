@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import type { SessionSummary } from "@dashclaw/runtime-model";
 import { KindChip, StatusChip } from "./Chips";
 import { ExecutionContext } from "./ExecutionContext";
+import { SessionOperationalBadges } from "./SessionOperational";
 import {
   formatRelativeTime,
   parseSessionKind,
@@ -47,6 +48,8 @@ export function SessionCard({
           <span className="mono">{session.currentTool}</span>
         </div>
       ) : null}
+
+      <SessionOperationalBadges session={session} />
 
       <ExecutionContext session={session} />
 

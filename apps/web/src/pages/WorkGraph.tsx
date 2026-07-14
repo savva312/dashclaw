@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState, type PointerEvent, type WheelEvent } from "react";
 import { Link } from "react-router-dom";
 import { useAppState } from "../context";
+import { SessionOperationalBadges, sessionOperationalBadges } from "./agents/SessionOperational";
 import {
   buildDashboardModel,
   type DeliveryRecoveryState,
@@ -285,7 +286,8 @@ function GraphNodeCard({
 }) {
   const { node, x, y } = item;
   const title = truncate(node.label, 24);
-  const subtitle = truncate(node.currentTool ?? node.task?.runId ?? node.session?.currentRunId ?? node.cronJob?.schedule ?? node.id, 28);
+  const operationalSignal = node.session ? sessionOperationalBadges(node.session)[0]?.label : undefined;
+  const subtitle = truncate(operationalSignal ?? node.currentTool ?? node.task?.runId ?? node.session?.currentRunId ?? node.cronJob?.schedule ?? node.id, 28);
 
   return (
     <g
@@ -314,6 +316,7 @@ function WorkGraphDetail({ node }: { node: WorkGraphNode }) {
         <span className={`badge ${badgeClassForStatus(node.status)}`}>{node.status}</span>
         <span className="badge neutral">{node.role}</span>
       </div>
+      {node.session ? <SessionOperationalBadges session={node.session} /> : null}
       <h3>{node.label}</h3>
       <dl className="work-graph-detail-list">
         <DetailRow label="kind" value={node.kind} />
@@ -507,6 +510,20 @@ function matchesQuery(node: WorkGraphNode, query: string): boolean {
     node.agent?.name,
     node.session?.key,
     node.session?.currentRunId,
+    node.session?.model,
+    node.session?.modelProvider,
+    node.session?.agentRuntime,
+    node.session?.agentRuntimeSource,
+    node.session?.parentSessionKey,
+    node.session?.spawnedBy,
+    node.session?.ownerSessionKey,
+    node.session?.subagentRole,
+    node.session?.subagentControlScope,
+    node.session?.subagentRunState,
+    node.session?.deliveryContext?.channel,
+    node.session?.deliveryContext?.to,
+    node.session?.origin?.provider,
+    node.session?.origin?.surface,
     node.task?.id,
     node.task?.title,
     node.task?.runId,

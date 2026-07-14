@@ -17,6 +17,7 @@ test.describe("Discord workflow browser smoke", () => {
     await expect(page.getByText("Completed, failed, and human-review work")).toBeVisible();
     await expect(page.getByRole("link", { name: "Task detail" }).first()).toBeVisible();
     await expect(page.getByLabel("Disabled recovery actions").first()).toBeVisible();
+    await expect(page.getByText("subagent active", { exact: true }).first()).toBeVisible();
   });
 
   test("renders the Thread Map with lineage diagnostics", async ({ page }) => {
@@ -26,6 +27,10 @@ test.describe("Discord workflow browser smoke", () => {
     await expect(page.getByText("Reverse lookup for Discord/source conversations")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Binding metadata gaps" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Open work board" }).first()).toBeVisible();
+
+    await page.goto("/graph");
+    await expect(page.getByRole("heading", { name: "Work Graph" })).toBeVisible();
+    await expect(page.getByText("subagent active", { exact: true }).first()).toBeVisible();
   });
 
   test("renders the approval cockpit without enabling unsafe decisions", async ({ page }) => {
@@ -52,6 +57,11 @@ test.describe("Discord workflow browser smoke", () => {
     await page.goto(`/agents/fixture-model/sessions/${encodeURIComponent("agent:dashclaw:discord:thread:work-board:subagent:model")}`);
     await expect(page.getByLabel("Reported execution context")).toContainText("Working directory");
     await expect(page.getByLabel("Explicitly reported worktree context").filter({ hasText: branch })).toContainText(path);
+    const evidence = page.getByLabel("Session runtime and lineage evidence");
+    await expect(evidence).toContainText("Runtime identity");
+    await expect(evidence).toContainText("openai/gpt-5.6-terra");
+    await expect(evidence).toContainText("fixture-model");
+    await expect(evidence).toContainText("thread-work-board");
 
     await page.goto("/agents/dashclaw");
     const pathOnlyContext = page

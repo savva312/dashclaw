@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useAppState } from "../context";
 import { buildDashboardModel, taskLedgerCue, type AttentionTone, type DeliveryRecoveryState, type ReviewItem, type WorkBoardColumn, type WorkItem } from "../runtime/dashboard";
 import { formatCompactTitle } from "../lib/format";
+import { sessionOperationalBadges } from "./agents/SessionOperational";
 
 function badgeClassForTone(tone: AttentionTone | "ok") {
   if (tone === "ok") return "ok";
@@ -58,7 +59,25 @@ function matchesQuery(item: WorkItem, query: string): boolean {
     item.lineage.quality,
     item.lineage.diagnostic,
     ...item.evidence.agents.map((agent) => `${agent.name ?? ""} ${agent.id}`),
-    ...item.evidence.sessions.map((session) => `${session.label ?? ""} ${session.key} ${session.status ?? ""}`),
+    ...item.evidence.sessions.map((session) => [
+      session.label,
+      session.key,
+      session.status,
+      session.model,
+      session.modelProvider,
+      session.agentRuntime,
+      session.agentRuntimeSource,
+      session.parentSessionKey,
+      session.spawnedBy,
+      session.ownerSessionKey,
+      session.subagentRole,
+      session.subagentControlScope,
+      session.subagentRunState,
+      session.deliveryContext?.channel,
+      session.deliveryContext?.to,
+      session.origin?.provider,
+      session.origin?.surface,
+    ].filter(Boolean).join(" ")),
     ...item.evidence.tasks.map((task) => `${task.title ?? ""} ${task.id} ${task.runId ?? ""} ${task.status} ${task.progressSummary ?? ""} ${task.terminalSummary ?? ""} ${task.ownerKey ?? ""} ${task.childSessionKey ?? ""} ${task.sourceId ?? ""} ${task.flowId ?? ""}`),
     ...item.evidence.approvals.map((approval) => `${approval.id} ${approval.command ?? ""} ${approval.status}`),
     item.deliveryRecovery.label,
@@ -259,6 +278,10 @@ function WorkBoardCard({ item, compact = false }: { item: WorkItem; compact?: bo
   const primaryLink = item.links.task ?? item.links.session ?? item.links.agent ?? item.links.approval ?? item.links.timeline;
   const incomplete = item.lineage.quality !== "complete";
   const taskCue = item.evidence.tasks[0] ? taskLedgerCue(item.evidence.tasks[0]) : undefined;
+  const operationalSignals = item.evidence.sessions
+    .flatMap(sessionOperationalBadges)
+    .filter((signal, index, all) => all.findIndex((candidate) => candidate.label === signal.label) === index)
+    .slice(0, 3);
 
   return (
     <article className={`work-board-card work-board-card-${badgeClassForTone(item.tone)}${compact ? " work-board-card-compact" : ""}`}>
@@ -292,6 +315,13 @@ function WorkBoardCard({ item, compact = false }: { item: WorkItem; compact?: bo
         </div>
       </dl>
       <DeliveryRecoveryCard delivery={item.deliveryRecovery} />
+      {operationalSignals.length > 0 ? (
+        <div className="session-operational-badges" aria-label="Session operational signals">
+          {operationalSignals.map((signal) => (
+            <span key={signal.label} className={`badge ${signal.tone}`}>{signal.label}</span>
+          ))}
+        </div>
+      ) : null}
       {item.currentAction ? <div className="work-board-next text-clip">Current: {item.currentAction}</div> : null}
       {incomplete ? <div className="badge warn">{item.lineage.diagnostic ?? "lineage incomplete"}</div> : null}
       <div className="work-board-links">
