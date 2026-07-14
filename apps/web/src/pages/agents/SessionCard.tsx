@@ -1,7 +1,8 @@
 import { Link } from "react-router-dom";
 import type { SessionSummary } from "@dashclaw/runtime-model";
 import { KindChip, StatusChip } from "./Chips";
-import { WorktreeMetadata } from "./WorktreeMetadata";
+import { ExecutionContext } from "./ExecutionContext";
+import { SessionOperationalBadges } from "./SessionOperational";
 import {
   formatRelativeTime,
   parseSessionKind,
@@ -48,7 +49,9 @@ export function SessionCard({
         </div>
       ) : null}
 
-      <WorktreeMetadata worktree={session.worktree} />
+      <SessionOperationalBadges session={session} />
+
+      <ExecutionContext session={session} />
 
       <div className="session-card-footer">
         <span>{formatRelativeTime(session.updatedAt ?? session.lastInteractionAt)}</span>

@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 
-export const FAKE_GATEWAY_SCENARIOS = ["idle", "busy", "failed", "approval-heavy", "approval-cockpit", "degraded", "discord-workflow"] as const;
+export const FAKE_GATEWAY_SCENARIOS = ["idle", "busy", "failed", "approval-heavy", "approval-cockpit", "degraded", "discord-workflow", "session-pagination", "task-contract"] as const;
 export type FakeGatewayScenario = (typeof FAKE_GATEWAY_SCENARIOS)[number];
 
 export interface FakeGatewayOptions {
@@ -18,6 +18,7 @@ export interface FakeGatewayHandle {
   close: () => Promise<void>;
   emitEvent: (event: string, payload?: unknown) => void;
   emitAssistantSequence: (sessionKey?: string) => void;
+  emitStreamContractSequence: (sessionKey?: string) => void;
 }
 
 type JsonObject = Record<string, unknown>;
@@ -63,6 +64,45 @@ export async function startFakeGateway(options: FakeGatewayOptions = {}): Promis
     emitEvent("session.tool", { ...common, toolName: "read", phase: "completed" });
     emitEvent("chat", { ...common, state: "delta", deltaText: "the runtime now." });
     emitEvent("chat", { ...common, state: "final", text: "I’m checking the runtime now." });
+  };
+
+  const emitStreamContractSequence = (sessionKey = "agent:main:main") => {
+    const spawnedBy = "agent:main:main";
+    const first = { sessionKey, runId: "run-contract-first", messageId: "message-contract-first" };
+    const concurrent = { sessionKey, runId: "run-contract-concurrent", messageId: "message-contract-concurrent" };
+    emitEvent("chat", { ...first, agentId: "main", spawnedBy, state: "delta", seq: 1, deltaText: "Inspecting " });
+    emitEvent("chat", { ...concurrent, agentId: "main", spawnedBy, state: "delta", seq: 1, deltaText: "Concurrent" });
+    emitEvent("agent", {
+      runId: first.runId,
+      seq: 2,
+      stream: "tool",
+      ts: Date.now(),
+      spawnedBy,
+      data: { sessionKey, agentId: "main", toolName: "read", phase: "completed" },
+    });
+    emitEvent("chat", {
+      ...first,
+      agentId: "main",
+      spawnedBy,
+      state: "final",
+      seq: 2,
+      text: "Inspecting complete",
+      replace: true,
+      usage: { inputTokens: 12, outputTokens: 3 },
+      stopReason: "stop",
+    });
+    emitEvent("chat", { ...concurrent, agentId: "main", spawnedBy, state: "aborted", seq: 2, stopReason: "operator" });
+    emitEvent("chat", {
+      sessionKey,
+      runId: "run-contract-error",
+      messageId: "message-contract-error",
+      agentId: "main",
+      spawnedBy,
+      state: "error",
+      seq: 1,
+      errorKind: "provider",
+      errorMessage: "fixture provider failure",
+    });
   };
 
   const wss = new WebSocketServer({ server });
@@ -157,6 +197,7 @@ export async function startFakeGateway(options: FakeGatewayOptions = {}): Promis
       }),
     emitEvent,
     emitAssistantSequence,
+    emitStreamContractSequence,
   };
 }
 
@@ -169,7 +210,7 @@ function responseFor(state: FakeGatewayScenarioData, method: string, params?: Re
     case "agents.list":
       return { agents: state.agents };
     case "sessions.list":
-      return { sessions: state.sessions };
+      return paginateSessions(state.sessions, params);
     case "sessions.preview": {
       const keys = Array.isArray(params?.keys)
         ? params.keys.filter((key): key is string => typeof key === "string")
@@ -354,9 +395,123 @@ function buildScenarioData(scenario: FakeGatewayScenario): FakeGatewayScenarioDa
       };
     case "discord-workflow":
       return discordWorkflowScenarioData(common);
+    case "session-pagination":
+      return {
+        ...common,
+        sessions: Array.from({ length: 125 }, (_, index) =>
+          session(
+            `agent:pagination:session:${String(index + 1).padStart(3, "0")}`,
+            "pagination",
+            `Paginated session ${index + 1}`,
+            index < 3 ? "running" : "completed",
+            -index * 1_000,
+          ),
+        ),
+      };
+    case "task-contract":
+      return taskContractScenarioData(common);
     case "busy":
       return common;
   }
+}
+
+function paginateSessions(sessions: JsonObject[], params?: Record<string, unknown>): JsonObject {
+  const offset =
+    typeof params?.offset === "number" && Number.isSafeInteger(params.offset) && params.offset >= 0
+      ? params.offset
+      : 0;
+  const limit =
+    typeof params?.limit === "number" && Number.isSafeInteger(params.limit) && params.limit > 0
+      ? params.limit
+      : 100;
+  const page = sessions.slice(offset, offset + limit);
+  const nextOffset = offset + page.length;
+  const hasMore = nextOffset < sessions.length;
+  return {
+    sessions: page,
+    total: sessions.length,
+    hasMore,
+    ...(hasMore ? { nextOffset } : {}),
+  };
+}
+
+function taskContractScenarioData(common: FakeGatewayScenarioData): FakeGatewayScenarioData {
+  const retainedRows = Array.from({ length: 77 }, (_, index) =>
+    task(
+      `task-contract-retained-${String(index + 1).padStart(2, "0")}`,
+      "completed",
+      `Retained task contract row ${index + 1}`,
+      index % 2 === 0 ? "worker" : "qa",
+      index % 2 === 0 ? "agent:worker:subagent" : "agent:qa:queued",
+      `run-contract-retained-${index + 1}`,
+      -(30 + index) * 60_000,
+      -(29 + index) * 60_000,
+      undefined,
+      {
+        kind: "contract-sample",
+        ownerKey: "agent:main:main",
+        sourceId: "sanitized-live-probe",
+        createdAt: BASE_TIME - (31 + index) * 60_000,
+        updatedAt: BASE_TIME - (29 + index) * 60_000,
+        terminalSummary: `Sanitized retained result ${index + 1}`,
+        runtime: { source: "gateway", runtimeMs: 60_000 },
+      },
+    ),
+  );
+  return {
+    ...common,
+    tasks: [
+      task("task-contract-running", "running", "Inspect live task contract", "main", "agent:main:main", "run-contract-running", -6 * 60_000, undefined, undefined, {
+        kind: "main",
+        taskId: "task-contract-running",
+        ownerKey: "agent:main:main",
+        childSessionKey: "agent:worker:subagent",
+        sourceId: "dashboard",
+        flowId: "flow-contract",
+        createdAt: BASE_TIME - 7 * 60_000,
+        updatedAt: BASE_TIME - 20_000,
+        startedAt: BASE_TIME - 6 * 60_000,
+        progressSummary: "Inspecting task lifecycle and result fields",
+        runtime: { id: "runtime-contract-running", source: "gateway", startedAt: BASE_TIME - 6 * 60_000, runtimeMs: 340_000 },
+      }),
+      task("task-contract-success", "completed", "Complete contract inspection", "worker", "agent:worker:subagent", "run-contract-success", -12 * 60_000, -9 * 60_000, undefined, {
+        kind: "subagent",
+        ownerKey: "agent:main:main",
+        childSessionKey: "agent:worker:subagent",
+        sourceId: "subagent-registry",
+        flowId: "flow-contract",
+        createdAt: BASE_TIME - 13 * 60_000,
+        updatedAt: BASE_TIME - 9 * 60_000,
+        startedAt: BASE_TIME - 12 * 60_000,
+        endedAt: BASE_TIME - 9 * 60_000,
+        progressSummary: "Validated 81 of 82 task rows",
+        terminalSummary: "Validated all supported task fields",
+        runtime: { id: "runtime-contract-success", source: "gateway", startedAt: BASE_TIME - 12 * 60_000, endedAt: BASE_TIME - 9 * 60_000, runtimeMs: 180_000 },
+      }),
+      task("task-contract-failed", "failed", "Validate structured task error", "qa", "agent:qa:queued", "run-contract-failed", -18 * 60_000, -15 * 60_000, undefined, {
+        kind: "validation",
+        sourceId: "contract-test",
+        createdAt: BASE_TIME - 19 * 60_000,
+        updatedAt: BASE_TIME - 15 * 60_000,
+        terminalSummary: "Validation stopped after a schema mismatch",
+        error: { message: "Task schema mismatch", code: "TASK_SCHEMA_MISMATCH", kind: "validation", stack: "not exposed" },
+        runtime: { source: "gateway", runtimeMs: 180_000 },
+      }),
+      task("task-contract-missing-summary", "completed", "Terminal task without summary", "qa", "agent:qa:queued", "run-contract-missing", -24 * 60_000, -22 * 60_000, undefined, {
+        kind: "validation",
+        sourceId: "contract-test",
+        createdAt: BASE_TIME - 25 * 60_000,
+        updatedAt: BASE_TIME - 22 * 60_000,
+      }),
+      task("task-contract-queued", "queued", "Await contract worker", "worker", "agent:worker:subagent", "run-contract-queued", -60_000, undefined, undefined, {
+        ownerKey: "agent:main:main",
+        childSessionKey: "agent:worker:subagent",
+        sourceId: "dashboard",
+      }),
+      ...retainedRows,
+    ],
+    logs: ["[info] 82-row sanitized task contract fixture loaded with running, terminal, failed, missing-summary, flow, and child variants"],
+  };
 }
 
 function discordWorkflowScenarioData(common: FakeGatewayScenarioData): FakeGatewayScenarioData {
@@ -386,6 +541,9 @@ function discordWorkflowScenarioData(common: FakeGatewayScenarioData): FakeGatew
       }),
       session(workBoardThread, "dashclaw", "thread: implement work board", "running", -45_000, "run-thread-work-board", "spawn_subagent", {
         parentSessionKey: mainChannel,
+        hasActiveRun: true,
+        hasActiveSubagentRun: true,
+        subagentRunState: "active",
         channelId: "1519213500986036264",
         threadId: "thread-work-board",
         platform: "discord",
@@ -395,9 +553,28 @@ function discordWorkflowScenarioData(common: FakeGatewayScenarioData): FakeGatew
         parentSessionKey: workBoardThread,
         spawnedBy: workBoardThread,
         requesterSessionKey: workBoardThread,
+        sessionId: "session-fixture-model",
+        kind: "subagent",
+        startedAt: BASE_TIME - 8 * 60_000,
+        runtimeMs: 7 * 60_000,
+        model: { primary: "openai/gpt-5.6-terra" },
+        modelProvider: "openai",
+        agentRuntime: { id: "openclaw", source: "gateway" },
+        hasActiveRun: true,
+        hasActiveSubagentRun: false,
+        subagentRunState: "running",
+        abortedLastRun: false,
+        spawnDepth: 1,
+        subagentRole: "fixture-model",
+        subagentControlScope: "workspace",
+        forkedFromParent: true,
+        deliveryContext: { channel: "discord", to: "thread-work-board", accountId: "fixture-account", threadId: "thread-work-board" },
+        origin: { provider: "discord", surface: "thread", chatType: "channel", channelId: "1519213500986036264", threadId: "thread-work-board" },
+        spawnedWorkspaceDir: "/workspace/dashclaw",
         spawnedCwd: "/workspace/.worktrees/task-039-fixture-model-lane",
         worktree: {
           id: "task-039-fixture-model-lane",
+          path: "/workspace/.worktrees/task-039-fixture-model-lane",
           branch: "agent/task-039-fixture-model-lane",
           repoRoot: "/workspace/dashclaw",
         },
@@ -408,6 +585,12 @@ function discordWorkflowScenarioData(common: FakeGatewayScenarioData): FakeGatew
       }),
       session(completedThread, "dashclaw", "thread: completed fixture summary", "completed", -20 * 60_000, undefined, undefined, {
         parentSessionKey: mainChannel,
+        startedAt: BASE_TIME - 28 * 60_000,
+        endedAt: BASE_TIME - 20 * 60_000,
+        runtimeMs: 8 * 60_000,
+        hasActiveRun: false,
+        hasActiveSubagentRun: false,
+        abortedLastRun: false,
         channelId: "1519213500986036264",
         threadId: "thread-completed-summary",
         platform: "discord",
@@ -416,6 +599,12 @@ function discordWorkflowScenarioData(common: FakeGatewayScenarioData): FakeGatew
       }),
       session(failedThread, "dashclaw", "thread: investigate failed delivery", "failed", -12 * 60_000, undefined, undefined, {
         parentSessionKey: mainChannel,
+        startedAt: BASE_TIME - 25 * 60_000,
+        endedAt: BASE_TIME - 12 * 60_000,
+        runtimeMs: 13 * 60_000,
+        hasActiveRun: false,
+        hasActiveSubagentRun: false,
+        abortedLastRun: true,
         channelId: "1519213500986036264",
         threadId: "thread-failed-delivery",
         platform: "discord",
@@ -427,6 +616,8 @@ function discordWorkflowScenarioData(common: FakeGatewayScenarioData): FakeGatew
         threadId: "thread-archived-context",
         platform: "discord",
         archived: true,
+        spawnedWorkspaceDir: "/workspace/dashclaw",
+        spawnedCwd: "/workspace/dashclaw-worktrees/deleted-archived-context",
         permalink: "discord://channels/example/1519213500986036264/thread-archived-context",
       }),
     ],
@@ -437,11 +628,22 @@ function discordWorkflowScenarioData(common: FakeGatewayScenarioData): FakeGatew
       task("task-work-board", "running", "Implement work board fixture", "dashclaw", workBoardThread, "run-thread-work-board", -35 * 60_000, undefined, undefined, {
         kind: "discord-thread",
         parentSessionKey: mainChannel,
+        ownerKey: mainChannel,
+        childSessionKey: subagentSession,
+        sourceId: "discord-work-board",
+        flowId: "flow-work-board",
+        progressSummary: "Coordinating fixture implementation and review",
+        runtime: { id: "run-thread-work-board", source: "gateway", runtimeMs: 34 * 60_000 },
       }),
       task("task-fixture-model-lane", "running", "Inspect fake gateway runtime model", "fixture-model", subagentSession, "run-subagent-fixture", -8 * 60_000, undefined, undefined, {
         kind: "subagent",
         parentTaskId: "task-work-board",
         parentSessionKey: workBoardThread,
+        ownerKey: workBoardThread,
+        childSessionKey: subagentSession,
+        sourceId: "subagent-registry",
+        flowId: "flow-work-board",
+        progressSummary: "Inspecting runtime model fields",
       }),
       task("task-acp-review", "queued", "Review fixture extension", "coder", acpSession, "run-acp-fixture", -2 * 60_000, undefined, undefined, {
         kind: "acp",
@@ -453,6 +655,11 @@ function discordWorkflowScenarioData(common: FakeGatewayScenarioData): FakeGatew
         kind: "discord-thread",
         deliveryState: "delivered",
         finalSummary: "Completed summary was delivered to Discord.",
+        terminalSummary: "Completed summary was delivered to Discord.",
+        ownerKey: mainChannel,
+        sourceId: "discord-work-board",
+        flowId: "flow-summary",
+        runtime: { id: "run-thread-summary", source: "gateway", runtimeMs: 8 * 60_000 },
       }),
       task("task-failed-delivery", "failed", "Investigate failed delivery", "dashclaw", failedThread, "run-failed-delivery", -25 * 60_000, -12 * 60_000, "Discord result delivery failed after thread handoff", {
         kind: "discord-thread",
@@ -480,18 +687,80 @@ function commonScenarioData(): FakeGatewayScenarioData {
   return {
     health: { ok: true, uptimeMs: 12345, version: "fake-2026.6.0" },
     agents: [
-      { id: "main", name: "Main Agent", model: "openclaw/default", runtime: "openclaw", workspace: "/workspace" },
+      {
+        id: "main",
+        name: "Main Agent",
+        model: { primary: "openai/gpt-5.6-terra" },
+        agentRuntime: { id: "openclaw", source: "gateway" },
+        thinkingDefault: "medium",
+        workspace: "/workspace",
+      },
       { id: "worker", name: "Worker Subagent", model: "openclaw/default", runtime: "openclaw", workspace: "/workspace" },
       { id: "qa", name: "QA Agent", model: "openclaw/default", runtime: "openclaw", workspace: "/workspace" },
       { id: "ops", name: "Ops Agent", model: "openclaw/default", runtime: "openclaw", workspace: "/workspace" },
     ],
     sessions: [
-      session("agent:main:main", "main", "Main", "running", -30_000, "run-main", "read"),
+      session("agent:main:main", "main", "Main", "running", -30_000, "run-main", "read", {
+        sessionId: "session-main",
+        kind: "main",
+        startedAt: BASE_TIME - 10 * 60_000,
+        runtimeMs: 570_000,
+        agentRuntime: { id: "openclaw", source: "gateway" },
+        model: { primary: "openai/gpt-5.6-terra" },
+        modelProvider: "openai",
+        hasActiveRun: true,
+        hasActiveSubagentRun: true,
+        inputTokens: 12_000,
+        outputTokens: 3_000,
+        totalTokens: 15_000,
+        contextTokens: 128_000,
+        estimatedCostUsd: 0.42,
+        contextBudgetStatus: {
+          schemaVersion: 1,
+          source: "pre-prompt-estimate",
+          updatedAt: BASE_TIME - 30_000,
+          provider: "openai",
+          model: "gpt-5.6-terra",
+          route: "fits",
+          shouldCompact: false,
+          estimatedPromptTokens: 15_000,
+          contextTokenBudget: 128_000,
+          promptBudgetBeforeReserve: 127_000,
+          reserveTokens: 1_000,
+          effectiveReserveTokens: 1_000,
+          remainingPromptBudgetTokens: 112_000,
+          overflowTokens: 0,
+          toolResultReducibleChars: 0,
+          messageCount: 20,
+          unwindowedMessageCount: 20,
+          sessionId: "session-main",
+        },
+        compactionCheckpointCount: 1,
+        latestCompactionCheckpoint: {
+          checkpointId: "checkpoint-main-1",
+          createdAt: BASE_TIME - 60_000,
+          reason: "auto-threshold",
+        },
+        deliveryContext: { channel: "dashboard", to: "operator" },
+        origin: { provider: "openclaw", surface: "dashboard" },
+        spawnedWorkspaceDir: "/workspace",
+        spawnedCwd: "/workspace/dashclaw",
+      }),
       session("agent:worker:subagent", "worker", "Worker subagent", "running", -45_000, "run-subagent", "pnpm test", { parentSessionKey: "agent:main:main" }),
       session("agent:qa:queued", "qa", "Queued QA", "queued", -90_000),
     ],
     tasks: [
-      task("task-1", "running", "Review PR", "main", "agent:main:main", "run-main", -5 * 60_000),
+      task("task-1", "running", "Review PR", "main", "agent:main:main", "run-main", -5 * 60_000, undefined, undefined, {
+        taskId: "task-1",
+        ownerKey: "agent:main:main",
+        childSessionKey: "agent:worker:subagent",
+        sourceId: "dashboard",
+        flowId: "flow-review",
+        createdAt: BASE_TIME - 6 * 60_000,
+        updatedAt: BASE_TIME - 30_000,
+        progressSummary: "Reviewing changed files",
+        runtime: { id: "run-main", source: "gateway", startedAt: BASE_TIME - 5 * 60_000, runtimeMs: 270_000 },
+      }),
       task("task-subagent-1", "running", "Run dashboard selectors", "worker", "agent:worker:subagent", "run-subagent", -4 * 60_000, undefined, undefined, {
         kind: "subagent",
         parentTaskId: "task-1",

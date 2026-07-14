@@ -88,7 +88,7 @@ Dashclaw talks to OpenClaw over the **Gateway WebSocket protocol** (not by readi
 
 Gateway events are not replayed; on sequence gaps Dashclaw refreshes snapshot via RPC. Pin against your installed OpenClaw version and recheck the [Gateway protocol docs](https://docs.openclaw.ai/gateway/protocol) when upgrading.
 
-Set `DASHCLAW_FAKE_GATEWAY=1` to use an in-process mock Gateway without a live OpenClaw install. Add `DASHCLAW_FAKE_GATEWAY_SCENARIO=idle|busy|failed|approval-heavy|degraded|discord-workflow` to drive repeatable dashboard states.
+Set `DASHCLAW_FAKE_GATEWAY=1` to use an in-process mock Gateway without a live OpenClaw install. Add `DASHCLAW_FAKE_GATEWAY_SCENARIO=idle|busy|failed|approval-heavy|approval-cockpit|degraded|discord-workflow|session-pagination|task-contract` to drive repeatable dashboard states, including multi-page discovery and live-shaped task telemetry.
 
 ## Admin safety
 
@@ -125,7 +125,7 @@ Configuration lives in the **repo root** `.env` file (copy from `.env.example`).
 | `OPENCLAW_GATEWAY_URL` | `ws://127.0.0.1:18789` | Gateway WebSocket URL |
 | `OPENCLAW_GATEWAY_TOKEN` | — | Gateway auth token |
 | `DASHCLAW_FAKE_GATEWAY` | — | Set `1` to use in-process fake gateway |
-| `DASHCLAW_FAKE_GATEWAY_SCENARIO` | `busy` | Fake gateway scenario: `idle`, `busy`, `failed`, `approval-heavy`, `degraded`, or `discord-workflow` |
+| `DASHCLAW_FAKE_GATEWAY_SCENARIO` | `busy` | Fake gateway scenario, including `session-pagination` and `task-contract` contract fixtures |
 | `DASHCLAW_SERVE_WEB` | auto | Set `0` to disable bundled UI in production |
 | `DASHCLAW_WEB_DIST` | `apps/web/dist` | Path to built web assets |
 | `VITE_PORT` | `5173` | Web dev server port |

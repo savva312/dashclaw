@@ -13,6 +13,7 @@ export type AttentionCategory = "intervention" | "access" | "security";
 export type AttentionKind =
   | "gateway"
   | "health"
+  | "session-discovery"
   | "stale-snapshot"
   | "task-failed"
   | "lost-task"
@@ -521,7 +522,24 @@ export interface TaskDetailModel {
   session?: SessionSummary;
   events: TimelineEvent[];
   links: RuntimeLinks;
+  execution: TaskExecutionEvidence;
   deliveryRecovery: DeliveryRecoveryState;
+}
+
+export type TaskEvidenceAvailability = "available" | "unavailable" | "not-applicable";
+
+export interface TaskNarrativeEvidence {
+  availability: TaskEvidenceAvailability;
+  label: string;
+  summary?: string;
+}
+
+export interface TaskExecutionEvidence {
+  progress: TaskNarrativeEvidence;
+  result: TaskNarrativeEvidence;
+  failure: TaskNarrativeEvidence;
+  runtimeMs?: number;
+  runtimeSource?: string;
 }
 
 export interface DashboardModelOptions {
@@ -597,7 +615,11 @@ export function buildDashboardModel(
     failedTasks,
   });
   const isStale = isOlderThan(snapshot.updatedAt, nowMs, snapshotStaleAfterMs);
-  const isLive = snapshot.connectionState === "connected" && !isStale && snapshot.health?.degraded !== true;
+  const isLive =
+    snapshot.connectionState === "connected" &&
+    !isStale &&
+    snapshot.health?.degraded !== true &&
+    snapshot.discovery?.sessions.degraded !== true;
   const workingAgents = agents.filter((agent) => agent.state === "working").length;
 
   return {
@@ -664,6 +686,18 @@ function buildRuntimeStatusSummary(
       tone: "warn",
       label: "Gateway degraded",
       summary: "Dashclaw is connected, but the gateway reports degraded health. Some runtime surfaces may be incomplete.",
+      empty,
+    };
+  }
+
+  if (snapshot.discovery?.sessions.degraded === true) {
+    const discovery = snapshot.discovery.sessions;
+    return {
+      tone: "warn",
+      label: "Session discovery incomplete",
+      summary: discovery.retainedLastComplete
+        ? `The latest session page cycle was incomplete (${discovery.reason ?? "unknown reason"}); showing the last complete set of ${discovery.publishedSessions} sessions.`
+        : `The latest session page cycle was incomplete (${discovery.reason ?? "unknown reason"}); only ${discovery.publishedSessions} sessions are currently available.`,
       empty,
     };
   }
@@ -1208,12 +1242,12 @@ function workItemFromSeed(
   const state = stateForWorkItem({ sessions, tasks, approvals });
   const updatedAt = newestTimestamp([
     ...sessions.map((session) => session.updatedAt ?? session.lastInteractionAt),
-    ...tasks.map((task) => task.endedAt ?? task.startedAt),
+    ...tasks.map((task) => task.endedAt ?? task.updatedAt ?? task.startedAt ?? task.createdAt),
     ...approvals.map((approval) => approval.requestedAt),
     ...events.map((event) => event.timestamp),
   ]);
   const createdAt = oldestTimestamp([
-    ...tasks.map((task) => task.startedAt ?? task.endedAt),
+    ...tasks.map((task) => task.createdAt ?? task.startedAt ?? task.endedAt ?? task.updatedAt),
     ...approvals.map((approval) => approval.requestedAt),
     ...events.map((event) => event.timestamp),
     ...sessions.map((session) => session.updatedAt ?? session.lastInteractionAt),
@@ -1273,7 +1307,7 @@ function reviewItemFromWorkItem(
 
   const changedAt = newestTimestamp([
     item.updatedAt,
-    ...item.evidence.tasks.map((candidate) => candidate.endedAt ?? candidate.startedAt),
+    ...item.evidence.tasks.map((candidate) => candidate.endedAt ?? candidate.updatedAt ?? candidate.startedAt ?? candidate.createdAt),
     ...item.evidence.sessions.map((session) => session.updatedAt ?? session.lastInteractionAt),
     ...item.evidence.events.map((event) => event.timestamp),
   ]);
@@ -1424,7 +1458,7 @@ export function buildDeliveryRecoveryQueueModel(
       links,
     });
 
-    if (!shouldShowInDeliveryRecoveryQueue(deliveryRecovery, task)) continue;
+    if (!shouldShowInDeliveryRecoveryQueue(deliveryRecovery)) continue;
 
     items.push({
       id: `task:${task.id}`,
@@ -1459,11 +1493,11 @@ export function buildDeliveryRecoveryQueueModel(
   };
 }
 
-function shouldShowInDeliveryRecoveryQueue(deliveryRecovery: DeliveryRecoveryState, task: TaskSummary): boolean {
+function shouldShowInDeliveryRecoveryQueue(deliveryRecovery: DeliveryRecoveryState): boolean {
   if (deliveryRecovery.status === "delivered") return false;
   if (deliveryRecovery.needsRecovery) return true;
   if (deliveryRecovery.status === "queued") return true;
-  return isTerminalTask(task) && deliveryRecovery.status === "unknown";
+  return false;
 }
 
 function nextActionForDeliveryRecovery(deliveryRecovery: DeliveryRecoveryState): string {
@@ -1477,7 +1511,7 @@ function nextActionForDeliveryRecovery(deliveryRecovery: DeliveryRecoveryState):
 function compareDeliveryRecoveryQueueItems(a: DeliveryRecoveryQueueItem, b: DeliveryRecoveryQueueItem): number {
   const statusRank = rankDeliveryRecoveryStatus(a.status) - rankDeliveryRecoveryStatus(b.status);
   if (statusRank !== 0) return statusRank;
-  return parseTime(b.task.endedAt ?? b.task.startedAt) - parseTime(a.task.endedAt ?? a.task.startedAt);
+  return parseTime(taskActivityTimestamp(b.task)) - parseTime(taskActivityTimestamp(a.task));
 }
 
 function rankDeliveryRecoveryStatus(status: DeliveryRecoveryStatus): number {
@@ -1646,17 +1680,33 @@ function deliveryRecoveryForWorkItem(input: {
     };
   }
 
+  if (terminal && !explicit && signal.resultVisible) {
+    return {
+      status: "unknown",
+      label: "Result available; delivery unknown",
+      tone: "neutral",
+      summary: "OpenClaw supplied a terminal result summary, but no delivery receipt or failure state. Result availability is not proof of delivery.",
+      known: false,
+      inferred: false,
+      resultVisible: true,
+      needsRecovery: false,
+      metadataGaps: ["delivery status metadata unavailable"],
+      evidence,
+      disabledActions,
+    };
+  }
+
   if (terminal && !explicit) {
     return {
-      status: "silent-terminal",
-      label: "No delivery signal",
-      tone: "warn",
-      summary: "Task reached a terminal state without explicit delivered/queued/failed delivery metadata.",
+      status: "unknown",
+      label: "Terminal result unavailable",
+      tone: "neutral",
+      summary: "The task is terminal, but OpenClaw supplied neither a terminal summary nor delivery metadata. Missing result evidence alone is not a delivery failure.",
       known: false,
-      inferred: true,
-      resultVisible: signal.resultVisible,
-      needsRecovery: true,
-      metadataGaps: ["terminal task has no delivery status metadata", "safe user-visible result body/receipt metadata missing"],
+      inferred: false,
+      resultVisible: false,
+      needsRecovery: false,
+      metadataGaps: ["terminal summary unavailable", "delivery status metadata unavailable"],
       evidence,
       disabledActions,
     };
@@ -1778,6 +1828,7 @@ function nextActionForAttention(item: AttentionItem): string {
   switch (item.kind) {
     case "gateway":
     case "health":
+    case "session-discovery":
     case "stale-snapshot":
     case "access":
       return "Verify gateway/access state before relying on the dashboard.";
@@ -2460,6 +2511,7 @@ export function buildTaskDetailModel(
     session,
     events,
     links,
+    execution: buildTaskExecutionEvidence(task),
     deliveryRecovery: deliveryRecoveryForWorkItem({
       state: stateForWorkItem({ sessions: session ? [session] : [], tasks: [task], approvals: [] }),
       sessions: session ? [session] : [],
@@ -2469,6 +2521,48 @@ export function buildTaskDetailModel(
       links,
     }),
   };
+}
+
+export function buildTaskExecutionEvidence(task: TaskSummary): TaskExecutionEvidence {
+  const terminal = isTerminalTask(task);
+  const running = task.status === "running";
+  const failed = task.status === "failed" || task.status === "timed_out";
+  const runtimeMs = task.runtime?.runtimeMs ?? elapsedTaskRuntime(task);
+
+  return {
+    progress: task.progressSummary
+      ? { availability: "available", label: "Current progress", summary: task.progressSummary }
+      : running
+        ? { availability: "unavailable", label: "Progress unavailable" }
+        : { availability: "not-applicable", label: terminal ? "Progress not retained" : "Progress not started" },
+    result: task.terminalSummary
+      ? { availability: "available", label: "Terminal result", summary: task.terminalSummary }
+      : terminal
+        ? { availability: "unavailable", label: "Terminal result unavailable" }
+        : { availability: "not-applicable", label: "Terminal result pending" },
+    failure: task.error
+      ? { availability: "available", label: "Failure detail", summary: task.error }
+      : failed
+        ? { availability: "unavailable", label: "Failure detail unavailable" }
+        : { availability: "not-applicable", label: "No failure reported" },
+    runtimeMs,
+    runtimeSource: task.runtime?.source,
+  };
+}
+
+export function taskLedgerCue(task: TaskSummary): TaskNarrativeEvidence {
+  const execution = buildTaskExecutionEvidence(task);
+  if (execution.failure.availability === "available") return execution.failure;
+  if (task.status === "running") return execution.progress;
+  if (isTerminalTask(task)) return execution.result;
+  return execution.progress;
+}
+
+function elapsedTaskRuntime(task: TaskSummary): number | undefined {
+  const started = parseTime(task.startedAt ?? task.createdAt);
+  const ended = parseTime(task.endedAt ?? task.updatedAt);
+  if (!started || !ended || ended < started) return undefined;
+  return ended - started;
 }
 
 export function relatedEventsForTask(timeline: TimelineEvent[], task: TaskSummary): TimelineEvent[] {
@@ -2775,6 +2869,22 @@ function buildAttentionItems(
       category: "access",
       tone: snapshot.health.ok === false ? "error" : "warn",
       title: snapshot.health.ok === false ? "Gateway health check is failing" : "Gateway health is degraded",
+      timestamp: snapshot.updatedAt,
+      links: { timeline: "/timeline" },
+    });
+  }
+
+  if (snapshot.discovery?.sessions.degraded === true) {
+    const discovery = snapshot.discovery.sessions;
+    items.push({
+      id: "snapshot:session-discovery",
+      kind: "session-discovery",
+      category: "access",
+      tone: "warn",
+      title: "Session discovery is incomplete",
+      summary: discovery.retainedLastComplete
+        ? `Showing the last complete set of ${discovery.publishedSessions} sessions because the latest cycle ended with ${discovery.reason ?? "an unknown error"}.`
+        : `Only ${discovery.publishedSessions} sessions were published before ${discovery.reason ?? "an unknown error"}.`,
       timestamp: snapshot.updatedAt,
       links: { timeline: "/timeline" },
     });
@@ -3231,13 +3341,19 @@ function summaryForWorkItem(input: {
   events: TimelineEvent[];
 }): string | undefined {
   const failedTask = input.tasks.find((task) => task.status === "failed" || task.status === "timed_out");
-  if (failedTask) return failedTask.error ?? `${failedTask.title ?? failedTask.id} ${failedTask.status}.`;
+  if (failedTask) return failedTask.error ?? failedTask.terminalSummary ?? `${failedTask.title ?? failedTask.id} ${failedTask.status}.`;
 
   const approval = input.approvals.find((candidate) => candidate.status === "pending");
   if (approval) return approval.command ?? `${approval.kind} approval pending.`;
 
   const sessionWithTool = input.sessions.find((session) => session.currentTool);
   if (sessionWithTool?.currentTool) return `Current tool: ${sessionWithTool.currentTool}`;
+
+  const runningTask = input.tasks.find((task) => task.status === "running" && task.progressSummary);
+  if (runningTask?.progressSummary) return runningTask.progressSummary;
+
+  const terminalTask = input.tasks.find((task) => isTerminalTask(task) && task.terminalSummary);
+  if (terminalTask?.terminalSummary) return terminalTask.terminalSummary;
 
   const newestEvent = input.events[0];
   if (newestEvent) return newestEvent.summary ?? newestEvent.title;
@@ -3257,7 +3373,8 @@ function currentActionForWorkItem(input: {
   if (approval) return approval.command;
   const sessionWithTool = input.sessions.find((session) => session.currentTool);
   if (sessionWithTool?.currentTool) return sessionWithTool.currentTool;
-  return primaryTaskForWorkItem(input.tasks)?.status;
+  const task = primaryTaskForWorkItem(input.tasks);
+  return task?.progressSummary ?? task?.status;
 }
 
 function lineageForWorkItem(
@@ -3357,7 +3474,11 @@ function rankWorkItemTaskStatus(status: TaskSummary["status"]): number {
 }
 
 function compareTasksByActivityDesc(a: TaskSummary, b: TaskSummary): number {
-  return parseTime(b.endedAt ?? b.startedAt) - parseTime(a.endedAt ?? a.startedAt);
+  return parseTime(taskActivityTimestamp(b)) - parseTime(taskActivityTimestamp(a));
+}
+
+function taskActivityTimestamp(task: TaskSummary): string | undefined {
+  return task.endedAt ?? task.updatedAt ?? task.startedAt ?? task.createdAt;
 }
 
 function compareApprovalsByActivityDesc(a: ApprovalSummary, b: ApprovalSummary): number {
@@ -3603,22 +3724,24 @@ function rankAttentionKind(kind: AttentionKind): number {
       return 0;
     case "health":
       return 1;
-    case "security-posture":
+    case "session-discovery":
       return 2;
-    case "approval":
+    case "security-posture":
       return 3;
-    case "task-failed":
+    case "approval":
       return 4;
-    case "lost-task":
+    case "task-failed":
       return 5;
-    case "access":
+    case "lost-task":
       return 6;
-    case "long-running-task":
+    case "access":
       return 7;
-    case "stale-active-session":
+    case "long-running-task":
       return 8;
-    case "stale-snapshot":
+    case "stale-active-session":
       return 9;
+    case "stale-snapshot":
+      return 10;
   }
 }
 

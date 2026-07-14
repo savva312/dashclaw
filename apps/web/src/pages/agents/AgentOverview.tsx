@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { useAppState } from "../../context";
 import { AgentCard } from "./AgentCard";
 import { AgentAvatar } from "./AgentAvatar";
-import { WorktreeMetadata } from "./WorktreeMetadata";
+import { ExecutionContext } from "./ExecutionContext";
 import { agentMatchesQuery, buildAllAgentStats } from "./utils";
 import {
   Badge,
@@ -81,7 +81,7 @@ export function AgentOverview() {
                   <div>
                     <strong>{row.agent.name ?? row.agent.id}</strong>
                     <span>{row.currentLabel ?? "Working"}</span>
-                    <WorktreeMetadata worktree={session?.worktree} />
+                    {session ? <ExecutionContext session={session} /> : null}
                   </div>
                   <Badge tone="live" pulse>
                     live
