@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 
-export const FAKE_GATEWAY_SCENARIOS = ["idle", "busy", "failed", "approval-heavy", "approval-cockpit", "degraded", "discord-workflow"] as const;
+export const FAKE_GATEWAY_SCENARIOS = ["idle", "busy", "failed", "approval-heavy", "approval-cockpit", "degraded", "discord-workflow", "session-pagination"] as const;
 export type FakeGatewayScenario = (typeof FAKE_GATEWAY_SCENARIOS)[number];
 
 export interface FakeGatewayOptions {
@@ -210,7 +210,7 @@ function responseFor(state: FakeGatewayScenarioData, method: string, params?: Re
     case "agents.list":
       return { agents: state.agents };
     case "sessions.list":
-      return { sessions: state.sessions };
+      return paginateSessions(state.sessions, params);
     case "sessions.preview": {
       const keys = Array.isArray(params?.keys)
         ? params.keys.filter((key): key is string => typeof key === "string")
@@ -395,9 +395,42 @@ function buildScenarioData(scenario: FakeGatewayScenario): FakeGatewayScenarioDa
       };
     case "discord-workflow":
       return discordWorkflowScenarioData(common);
+    case "session-pagination":
+      return {
+        ...common,
+        sessions: Array.from({ length: 125 }, (_, index) =>
+          session(
+            `agent:pagination:session:${String(index + 1).padStart(3, "0")}`,
+            "pagination",
+            `Paginated session ${index + 1}`,
+            index < 3 ? "running" : "completed",
+            -index * 1_000,
+          ),
+        ),
+      };
     case "busy":
       return common;
   }
+}
+
+function paginateSessions(sessions: JsonObject[], params?: Record<string, unknown>): JsonObject {
+  const offset =
+    typeof params?.offset === "number" && Number.isSafeInteger(params.offset) && params.offset >= 0
+      ? params.offset
+      : 0;
+  const limit =
+    typeof params?.limit === "number" && Number.isSafeInteger(params.limit) && params.limit > 0
+      ? params.limit
+      : 100;
+  const page = sessions.slice(offset, offset + limit);
+  const nextOffset = offset + page.length;
+  const hasMore = nextOffset < sessions.length;
+  return {
+    sessions: page,
+    total: sessions.length,
+    hasMore,
+    ...(hasMore ? { nextOffset } : {}),
+  };
 }
 
 function discordWorkflowScenarioData(common: FakeGatewayScenarioData): FakeGatewayScenarioData {

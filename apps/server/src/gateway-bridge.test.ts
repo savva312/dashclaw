@@ -184,6 +184,155 @@ describe("live OpenClaw contract normalization", () => {
   });
 });
 
+describe("session discovery pagination", () => {
+  it("honors returned offsets, variable page sizes, empty final pages, and stable duplicate resolution", async () => {
+    const offsets: number[] = [];
+    const result = await gatewayBridgeTestUtils.fetchSessionPages(async ({ offset }) => {
+      offsets.push(offset);
+      if (offset === 0) {
+        return {
+          sessions: [
+            { key: "session-a", label: "A from page 1" },
+            { key: "session-b", label: "B" },
+          ],
+          hasMore: true,
+          nextOffset: 2,
+          total: 3,
+        };
+      }
+      if (offset === 2) {
+        return {
+          sessions: [
+            { key: "session-a", label: "A from page 2" },
+            { key: "session-c", label: "C" },
+          ],
+          hasMore: true,
+          nextOffset: 7,
+          total: 3,
+        };
+      }
+      return { sessions: [], hasMore: false, total: 3 };
+    });
+
+    expect(offsets).toEqual([0, 2, 7]);
+    expect(result.sessions.map((session) => session.key)).toEqual(["session-a", "session-b", "session-c"]);
+    expect(result.sessions[0]?.label).toBe("A from page 2");
+    expect(result.status).toMatchObject({
+      state: "complete",
+      degraded: false,
+      pagesFetched: 3,
+      rowsFetched: 4,
+      uniqueSessionsFetched: 3,
+      expectedTotal: 3,
+    });
+  });
+
+  it("reports page and row safety caps instead of claiming completeness", async () => {
+    const pageCapped = await gatewayBridgeTestUtils.fetchSessionPages(
+      async ({ offset }) => ({
+        sessions: [{ key: `session-${offset}` }],
+        hasMore: true,
+        nextOffset: offset + 1,
+      }),
+      { maxPages: 2 },
+    );
+    expect(pageCapped.status).toMatchObject({
+      state: "incomplete",
+      degraded: true,
+      reason: "page-cap",
+      pagesFetched: 2,
+      nextOffset: 2,
+    });
+
+    const rowCapped = await gatewayBridgeTestUtils.fetchSessionPages(
+      async () => ({
+        sessions: [
+          { key: "session-1" },
+          { key: "session-2" },
+          { key: "session-3" },
+        ],
+        hasMore: true,
+        nextOffset: 3,
+      }),
+      { maxRows: 2 },
+    );
+    expect(rowCapped.sessions.map((session) => session.key)).toEqual(["session-1", "session-2"]);
+    expect(rowCapped.status).toMatchObject({
+      state: "incomplete",
+      degraded: true,
+      reason: "row-cap",
+      rowsFetched: 2,
+      uniqueSessionsFetched: 2,
+    });
+  });
+
+  it("retains the last complete session set when a later page fails", async () => {
+    const tracker = gatewayBridgeTestUtils.createSessionDiscoveryTracker();
+    const complete = await gatewayBridgeTestUtils.fetchSessionPages(async () => ({
+      sessions: [{ key: "last-known-good" }],
+      hasMore: false,
+    }));
+    expect(tracker.select(complete)).toMatchObject({
+      sessions: [{ key: "last-known-good" }],
+      retainedLastComplete: false,
+    });
+
+    const partial = await gatewayBridgeTestUtils.fetchSessionPages(async ({ offset }) => {
+      if (offset === 0) {
+        return {
+          sessions: [{ key: "partial-new-snapshot" }],
+          hasMore: true,
+          nextOffset: 50,
+        };
+      }
+      throw new Error("simulated later-page failure");
+    });
+    expect(partial.status).toMatchObject({
+      state: "incomplete",
+      degraded: true,
+      reason: "page-error",
+      pagesFetched: 1,
+      nextOffset: 50,
+    });
+    expect(tracker.select(partial)).toMatchObject({
+      sessions: [{ key: "last-known-good" }],
+      retainedLastComplete: true,
+    });
+  });
+
+  it("marks a repeated or backwards next offset incomplete", async () => {
+    const result = await gatewayBridgeTestUtils.fetchSessionPages(async () => ({
+      sessions: [{ key: "session-a" }],
+      hasMore: true,
+      nextOffset: 0,
+    }));
+
+    expect(result.status).toMatchObject({
+      state: "incomplete",
+      degraded: true,
+      reason: "invalid-next-offset",
+      pagesFetched: 1,
+      nextOffset: 0,
+    });
+  });
+
+  it("does not claim completeness when the final page contradicts its reported total", async () => {
+    const result = await gatewayBridgeTestUtils.fetchSessionPages(async () => ({
+      sessions: [{ key: "session-a" }],
+      hasMore: false,
+      total: 2,
+    }));
+
+    expect(result.status).toMatchObject({
+      state: "incomplete",
+      degraded: true,
+      reason: "inconsistent-page",
+      rowsFetched: 1,
+      expectedTotal: 2,
+    });
+  });
+});
+
 describe("gateway session normalization", () => {
   it("marks sessions active from hasActiveRun and running status", () => {
     const active = gatewayBridgeTestUtils.normalizeSession({

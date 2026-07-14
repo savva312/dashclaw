@@ -203,6 +203,31 @@ export interface NodeSummary {
   platform?: string;
 }
 
+export type SessionDiscoveryIncompleteReason =
+  | "page-error"
+  | "page-cap"
+  | "row-cap"
+  | "invalid-next-offset"
+  | "inconsistent-page";
+
+export interface SessionDiscoveryStatus {
+  state: "complete" | "incomplete";
+  degraded: boolean;
+  pagesFetched: number;
+  rowsFetched: number;
+  uniqueSessionsFetched: number;
+  publishedSessions: number;
+  expectedTotal?: number;
+  nextOffset?: number;
+  reason?: SessionDiscoveryIncompleteReason;
+  retainedLastComplete?: boolean;
+  message?: string;
+}
+
+export interface RuntimeDiscoveryStatus {
+  sessions: SessionDiscoveryStatus;
+}
+
 export interface TimelineEvent {
   id: string;
   kind: TimelineEventKind;
@@ -230,6 +255,7 @@ export interface RuntimeSnapshot {
   activeRunCount: number;
   pendingApprovalCount: number;
   failedTaskCount: number;
+  discovery?: RuntimeDiscoveryStatus;
   updatedAt: string;
 }
 

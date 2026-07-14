@@ -8,6 +8,7 @@ import type {
   GatewayConnectionState,
   NodeSummary,
   RuntimeSnapshot,
+  SessionDiscoveryStatus,
   SessionSummary,
   CompactionCheckpointSummary,
   ContextBudgetSummary,
@@ -42,6 +43,7 @@ export class GatewayBridge {
   private debouncedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private liveSessions = new Map<string, LiveSessionActivity>();
   private assistantStreams = new AssistantStreamAccumulator();
+  private sessionDiscovery = new SessionDiscoveryState();
   private onSnapshot?: (snapshot: RuntimeSnapshot) => void;
   private onTimeline?: (event: ReturnType<RuntimeStore["appendTimeline"]>) => void;
 
@@ -185,11 +187,11 @@ export class GatewayBridge {
     }
     this.refreshInFlight = true;
     try {
-      const [health, agentsRes, sessionsRes, tasksRes, runningTasksRes, cronRes, nodesRes, approvalsRes] =
+      const [health, agentsRes, sessionDiscoveryResult, tasksRes, runningTasksRes, cronRes, nodesRes, approvalsRes] =
         await Promise.all([
           this.client.call<Record<string, unknown>>("health").catch(() => null),
           this.client.call<{ agents?: unknown[] }>("agents.list").catch(() => ({ agents: [] })),
-          this.client.call<{ sessions?: unknown[] }>("sessions.list").catch(() => ({ sessions: [] })),
+          fetchSessionPages((params) => this.client.call("sessions.list", params)),
           this.client.call<{ tasks?: unknown[] }>("tasks.list", { limit: 100 }).catch(() => ({ tasks: [] })),
           this.client
             .call<{ tasks?: unknown[] }>("tasks.list", { limit: 50, status: ["running", "queued"] })
@@ -200,7 +202,13 @@ export class GatewayBridge {
         ]);
 
       const agents = (agentsRes.agents ?? []).map(normalizeAgent);
-      const sessions = this.applyLiveSessions((sessionsRes.sessions ?? []).map(normalizeSession));
+      const selectedSessions = this.sessionDiscovery.select(sessionDiscoveryResult);
+      const sessions = this.applyLiveSessions(selectedSessions.sessions);
+      const sessionDiscoveryStatus: SessionDiscoveryStatus = {
+        ...sessionDiscoveryResult.status,
+        publishedSessions: sessions.length,
+        retainedLastComplete: selectedSessions.retainedLastComplete || undefined,
+      };
       const taskMap = new Map<string, TaskSummary>();
       for (const raw of [...(tasksRes.tasks ?? []), ...(runningTasksRes.tasks ?? [])]) {
         const task = normalizeTask(raw);
@@ -238,6 +246,7 @@ export class GatewayBridge {
         activeRunCount,
         pendingApprovalCount,
         failedTaskCount,
+        discovery: { sessions: sessionDiscoveryStatus },
         updatedAt: new Date().toISOString(),
       };
 
@@ -415,6 +424,152 @@ function emptySnapshot(gatewayId: string): RuntimeSnapshot {
     failedTaskCount: 0,
     updatedAt: new Date().toISOString(),
   };
+}
+
+const DEFAULT_SESSION_PAGE_LIMIT = 100;
+const DEFAULT_MAX_SESSION_PAGES = 25;
+const DEFAULT_MAX_SESSION_ROWS = 2_500;
+
+interface SessionsListPage {
+  sessions?: unknown[];
+  hasMore?: boolean;
+  nextOffset?: number;
+  total?: number;
+}
+
+interface SessionPageOptions {
+  pageLimit?: number;
+  maxPages?: number;
+  maxRows?: number;
+}
+
+interface SessionPageResult {
+  sessions: SessionSummary[];
+  status: Omit<SessionDiscoveryStatus, "publishedSessions" | "retainedLastComplete">;
+}
+
+type SessionsListCall = (params: { limit: number; offset: number }) => Promise<SessionsListPage>;
+
+async function fetchSessionPages(
+  call: SessionsListCall,
+  options: SessionPageOptions = {},
+): Promise<SessionPageResult> {
+  const pageLimit = positiveInteger(options.pageLimit, DEFAULT_SESSION_PAGE_LIMIT);
+  const maxPages = positiveInteger(options.maxPages, DEFAULT_MAX_SESSION_PAGES);
+  const maxRows = positiveInteger(options.maxRows, DEFAULT_MAX_SESSION_ROWS);
+  const sessionsByKey = new Map<string, SessionSummary>();
+  const sessionOrder: string[] = [];
+  const visitedOffsets = new Set<number>();
+  let offset = 0;
+  let pagesFetched = 0;
+  let rowsFetched = 0;
+  let expectedTotal: number | undefined;
+
+  const result = (
+    state: "complete" | "incomplete",
+    details: Pick<SessionDiscoveryStatus, "reason" | "nextOffset" | "message"> = {},
+  ): SessionPageResult => ({
+    sessions: sessionOrder.map((key) => sessionsByKey.get(key)!),
+    status: {
+      state,
+      degraded: state === "incomplete",
+      pagesFetched,
+      rowsFetched,
+      uniqueSessionsFetched: sessionOrder.length,
+      expectedTotal,
+      ...details,
+    },
+  });
+
+  while (true) {
+    visitedOffsets.add(offset);
+    let page: SessionsListPage;
+    try {
+      page = await call({ limit: pageLimit, offset });
+    } catch {
+      return result("incomplete", {
+        reason: "page-error",
+        nextOffset: offset,
+        message: `sessions.list failed on page ${pagesFetched + 1}; the snapshot may omit sessions`,
+      });
+    }
+
+    pagesFetched += 1;
+    if (Number.isSafeInteger(page.total) && (page.total ?? -1) >= 0) {
+      expectedTotal = page.total;
+    }
+
+    const rows = Array.isArray(page.sessions) ? page.sessions : [];
+    const remaining = maxRows - rowsFetched;
+    const acceptedRows = rows.slice(0, Math.max(0, remaining));
+    for (const raw of acceptedRows) {
+      const session = normalizeSession(raw);
+      if (!sessionsByKey.has(session.key)) sessionOrder.push(session.key);
+      // Preserve first-seen order while allowing a later duplicate to provide
+      // the value published for that key.
+      sessionsByKey.set(session.key, session);
+    }
+    rowsFetched += acceptedRows.length;
+
+    if (acceptedRows.length < rows.length || (rowsFetched >= maxRows && page.hasMore === true)) {
+      return result("incomplete", {
+        reason: "row-cap",
+        nextOffset: validOffset(page.nextOffset) ? page.nextOffset : undefined,
+        message: `session discovery stopped at the ${maxRows}-row safety cap`,
+      });
+    }
+
+    if (page.hasMore !== true) {
+      if (expectedTotal !== undefined && rowsFetched < expectedTotal) {
+        return result("incomplete", {
+          reason: "inconsistent-page",
+          message: `sessions.list ended after ${rowsFetched} rows but reported ${expectedTotal} total`,
+        });
+      }
+      return result("complete");
+    }
+
+    if (pagesFetched >= maxPages) {
+      return result("incomplete", {
+        reason: "page-cap",
+        nextOffset: validOffset(page.nextOffset) ? page.nextOffset : undefined,
+        message: `session discovery stopped at the ${maxPages}-page safety cap`,
+      });
+    }
+
+    const nextOffset = page.nextOffset;
+    if (!validOffset(nextOffset) || nextOffset <= offset || visitedOffsets.has(nextOffset)) {
+      return result("incomplete", {
+        reason: "invalid-next-offset",
+        nextOffset: validOffset(nextOffset) ? nextOffset : undefined,
+        message: "sessions.list reported more rows without a new forward offset",
+      });
+    }
+    offset = nextOffset;
+  }
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return Number.isSafeInteger(value) && (value ?? 0) > 0 ? value! : fallback;
+}
+
+function validOffset(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+class SessionDiscoveryState {
+  private lastComplete: SessionSummary[] | null = null;
+
+  select(result: SessionPageResult): { sessions: SessionSummary[]; retainedLastComplete: boolean } {
+    if (result.status.state === "complete") {
+      this.lastComplete = result.sessions;
+      return { sessions: result.sessions, retainedLastComplete: false };
+    }
+    if (this.lastComplete) {
+      return { sessions: this.lastComplete, retainedLastComplete: true };
+    }
+    return { sessions: result.sessions, retainedLastComplete: false };
+  }
 }
 
 function rankTask(task: TaskSummary): number {
@@ -1287,6 +1442,11 @@ export const gatewayBridgeTestUtils = {
   buildEventTitle,
   mergeAssistantText,
   createAssistantStreamAccumulator: () => new AssistantStreamAccumulator(),
+  fetchSessionPages,
+  createSessionDiscoveryTracker: () => {
+    const state = new SessionDiscoveryState();
+    return { select: (result: SessionPageResult) => state.select(result) };
+  },
   createLiveSessionTracker: () => {
     const liveSessions = new Map<string, LiveSessionActivity>();
     return {

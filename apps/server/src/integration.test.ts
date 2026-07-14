@@ -93,6 +93,32 @@ describe("server integration", () => {
     });
   });
 
+  it("publishes every session from a fake gateway with more than 100 sessions", async () => {
+    fake = await startFakeGateway({ token: "test-token", scenario: "session-pagination" });
+    store = new RuntimeStore(join(tmpdir(), `dashclaw-${randomUUID()}.db`));
+
+    bridge = new GatewayBridge({
+      url: fake.url,
+      token: "test-token",
+      store,
+    });
+
+    await bridge.start();
+    const snapshot = await bridge.refreshSnapshot();
+
+    expect(snapshot.sessions).toHaveLength(125);
+    expect(new Set(snapshot.sessions.map((session) => session.key))).toHaveLength(125);
+    expect(snapshot.discovery?.sessions).toMatchObject({
+      state: "complete",
+      degraded: false,
+      pagesFetched: 2,
+      rowsFetched: 125,
+      uniqueSessionsFetched: 125,
+      publishedSessions: 125,
+      expectedTotal: 125,
+    });
+  });
+
   it("audits admin RPC calls", async () => {
     fake = await startFakeGateway({ token: "test-token" });
     store = new RuntimeStore(join(tmpdir(), `dashclaw-${randomUUID()}.db`));
