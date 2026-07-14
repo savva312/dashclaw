@@ -47,7 +47,40 @@ export interface AgentSummary {
   name?: string;
   model?: string;
   runtime?: string;
+  runtimeSource?: string;
+  thinkingDefault?: string;
   workspace?: string;
+}
+
+export interface ContextBudgetSummary {
+  status?: string;
+  reason?: string;
+  budgetTokens?: number;
+  remainingTokens?: number;
+  usedPercent?: number;
+}
+
+export interface CompactionCheckpointSummary {
+  timestamp?: string;
+  reason?: string;
+  tokensBefore?: number;
+  tokensAfter?: number;
+}
+
+export interface DeliveryContextSummary {
+  channel?: string;
+  to?: string;
+  accountId?: string;
+  threadId?: string;
+}
+
+export interface SessionOriginSummary {
+  provider?: string;
+  surface?: string;
+  chatType?: string;
+  accountId?: string;
+  channelId?: string;
+  threadId?: string;
 }
 
 export interface SessionWorktreeSummary {
@@ -59,20 +92,54 @@ export interface SessionWorktreeSummary {
 
 export interface SessionSummary {
   key: string;
+  sessionId?: string;
+  kind?: string;
   agentId?: string;
   parentSessionKey?: string;
   spawnedBy?: string;
   ownerSessionKey?: string;
+  spawnDepth?: number;
+  subagentRole?: string;
+  subagentControlScope?: string;
+  forkedFromParent?: boolean;
   label?: string;
   model?: string;
+  modelProvider?: string;
   agentRuntime?: string;
+  agentRuntimeSource?: string;
+  startedAt?: string;
+  endedAt?: string;
+  runtimeMs?: number;
   updatedAt?: string;
   lastInteractionAt?: string;
   status?: string;
   isActive?: boolean;
+  hasActiveRun?: boolean;
+  hasActiveSubagentRun?: boolean;
+  subagentRunState?: string;
+  abortedLastRun?: boolean;
   currentRunId?: string;
   currentTool?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  contextTokens?: number;
+  estimatedCostUsd?: number;
+  contextBudgetStatus?: ContextBudgetSummary;
+  compactionCheckpoint?: CompactionCheckpointSummary;
+  deliveryContext?: DeliveryContextSummary;
+  origin?: SessionOriginSummary;
+  spawnedWorkspaceDir?: string;
+  spawnedCwd?: string;
   worktree?: SessionWorktreeSummary;
+}
+
+export interface TaskRuntimeSummary {
+  id?: string;
+  source?: string;
+  startedAt?: string;
+  endedAt?: string;
+  runtimeMs?: number;
 }
 
 export interface TaskSummary {
@@ -83,9 +150,20 @@ export interface TaskSummary {
   agentId?: string;
   sessionKey?: string;
   runId?: string;
+  ownerKey?: string;
+  childSessionKey?: string;
+  sourceId?: string;
+  flowId?: string;
+  createdAt?: string;
+  updatedAt?: string;
   startedAt?: string;
   endedAt?: string;
+  runtime?: TaskRuntimeSummary;
+  progressSummary?: string;
+  terminalSummary?: string;
   error?: string;
+  errorCode?: string;
+  errorKind?: string;
 }
 
 export interface CronJobSummary {

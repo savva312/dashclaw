@@ -1,6 +1,189 @@
 import { describe, expect, it } from "vitest";
 import { gatewayBridgeTestUtils } from "./gateway-bridge.js";
 
+describe("live OpenClaw contract normalization", () => {
+  it("reduces structured agent model and runtime values to stable summaries", () => {
+    expect(
+      gatewayBridgeTestUtils.normalizeAgent({
+        id: "main",
+        name: "Main Agent",
+        model: { primary: "openai/gpt-5.6-terra", fallbacks: ["private-value-not-copied"] },
+        agentRuntime: { id: "openclaw", source: "gateway", internal: "not-copied" },
+        thinkingDefault: "medium",
+        workspace: "/workspace",
+      }),
+    ).toEqual({
+      id: "main",
+      name: "Main Agent",
+      model: "openai/gpt-5.6-terra",
+      runtime: "openclaw",
+      runtimeSource: "gateway",
+      thinkingDefault: "medium",
+      workspace: "/workspace",
+    });
+
+    expect(
+      gatewayBridgeTestUtils.normalizeAgent({
+        id: "legacy",
+        model: "openclaw/default",
+        runtime: "openclaw",
+      }),
+    ).toMatchObject({ model: "openclaw/default", runtime: "openclaw" });
+  });
+
+  it("preserves live-shaped session lifecycle, lineage, usage, delivery, and directory fields", () => {
+    const session = gatewayBridgeTestUtils.normalizeSession({
+      key: "agent:worker:subagent:contract",
+      sessionId: "session-contract",
+      kind: "subagent",
+      agentId: "worker",
+      parentSessionKey: "agent:main:main",
+      spawnedBy: "agent:main:main",
+      ownerSessionKey: "agent:main:main",
+      spawnDepth: 1,
+      subagentRole: "implementation",
+      subagentControlScope: "workspace",
+      forkedFromParent: true,
+      model: { primary: "openai/gpt-5.6-terra" },
+      modelProvider: "openai",
+      agentRuntime: { id: "openclaw", source: "gateway", ignored: "not-copied" },
+      startedAt: 1784041200000,
+      endedAt: 1784041260000,
+      runtimeMs: 60000,
+      updatedAt: 1784041260000,
+      lastInteractionAt: "2026-07-14T09:41:00.000Z",
+      status: "completed",
+      hasActiveRun: false,
+      hasActiveSubagentRun: false,
+      subagentRunState: "completed",
+      abortedLastRun: false,
+      inputTokens: 1200,
+      outputTokens: 300,
+      totalTokens: 1500,
+      contextTokens: 128000,
+      estimatedCostUsd: 0.125,
+      contextBudgetStatus: { status: "ok", remainingTokens: 126500, usedPercent: 1.17, raw: "not-copied" },
+      compactionCheckpoint: {
+        at: 1784041230000,
+        reason: "threshold",
+        tokensBefore: 90000,
+        tokensAfter: 30000,
+        raw: "not-copied",
+      },
+      deliveryContext: { channel: "discord", to: "thread-1", accountId: "account-1", threadId: "thread-1", text: "not-copied" },
+      origin: { provider: "discord", surface: "channel", chatType: "thread", channelId: "channel-1", threadId: "thread-1", message: "not-copied" },
+      spawnedWorkspaceDir: "/workspace",
+      spawnedCwd: "/workspace/dashclaw-task-042",
+    });
+
+    expect(session).toMatchObject({
+      sessionId: "session-contract",
+      kind: "subagent",
+      parentSessionKey: "agent:main:main",
+      spawnDepth: 1,
+      forkedFromParent: true,
+      model: "openai/gpt-5.6-terra",
+      modelProvider: "openai",
+      agentRuntime: "openclaw",
+      agentRuntimeSource: "gateway",
+      startedAt: "2026-07-14T15:00:00.000Z",
+      endedAt: "2026-07-14T15:01:00.000Z",
+      runtimeMs: 60000,
+      updatedAt: "2026-07-14T15:01:00.000Z",
+      totalTokens: 1500,
+      estimatedCostUsd: 0.125,
+      contextBudgetStatus: { status: "ok", remainingTokens: 126500, usedPercent: 1.17 },
+      compactionCheckpoint: {
+        timestamp: "2026-07-14T15:00:30.000Z",
+        reason: "threshold",
+        tokensBefore: 90000,
+        tokensAfter: 30000,
+      },
+      deliveryContext: { channel: "discord", to: "thread-1", accountId: "account-1", threadId: "thread-1" },
+      origin: { provider: "discord", surface: "channel", chatType: "thread", channelId: "channel-1", threadId: "thread-1" },
+      spawnedWorkspaceDir: "/workspace",
+      spawnedCwd: "/workspace/dashclaw-task-042",
+    });
+    expect(session.worktree).toBeUndefined();
+    expect(JSON.stringify(session)).not.toContain("not-copied");
+  });
+
+  it("preserves live-shaped task progress, results, runtime, and links", () => {
+    const task = gatewayBridgeTestUtils.normalizeTask({
+      id: "task-contract",
+      status: "failed",
+      kind: "subagent",
+      title: "Contract task",
+      agentId: "worker",
+      sessionKey: "agent:worker:subagent:contract",
+      runId: "run-contract",
+      ownerKey: "agent:main:main",
+      childSessionKey: "agent:worker:subagent:contract",
+      sourceId: "source-contract",
+      flowId: "flow-contract",
+      createdAt: 1784041200000,
+      updatedAt: 1784041260000,
+      startedAt: 1784041210000,
+      endedAt: 1784041250000,
+      runtime: { id: "runtime-contract", source: "gateway", startedAt: 1784041210000, endedAt: 1784041250000, durationMs: 40000, raw: "not-copied" },
+      progressSummary: "Ran contract checks",
+      terminalSummary: "One contract check failed",
+      error: { message: "Contract mismatch", code: "CONTRACT_MISMATCH", kind: "validation", stack: "not-copied" },
+    });
+
+    expect(task).toMatchObject({
+      ownerKey: "agent:main:main",
+      childSessionKey: "agent:worker:subagent:contract",
+      sourceId: "source-contract",
+      flowId: "flow-contract",
+      createdAt: "2026-07-14T15:00:00.000Z",
+      updatedAt: "2026-07-14T15:01:00.000Z",
+      startedAt: "2026-07-14T15:00:10.000Z",
+      endedAt: "2026-07-14T15:00:50.000Z",
+      runtime: {
+        id: "runtime-contract",
+        source: "gateway",
+        startedAt: "2026-07-14T15:00:10.000Z",
+        endedAt: "2026-07-14T15:00:50.000Z",
+        runtimeMs: 40000,
+      },
+      progressSummary: "Ran contract checks",
+      terminalSummary: "One contract check failed",
+      error: "Contract mismatch",
+      errorCode: "CONTRACT_MISMATCH",
+      errorKind: "validation",
+    });
+    expect(JSON.stringify(task)).not.toContain("not-copied");
+  });
+
+  it("keeps legacy strings and omits missing or invalid values", () => {
+    const session = gatewayBridgeTestUtils.normalizeSession({
+      key: "agent:legacy:main",
+      model: "openclaw/default",
+      agentRuntime: "openclaw",
+      updatedAt: "not-a-timestamp",
+      startedAt: 42,
+      contextBudgetStatus: "warning",
+    });
+    const task = gatewayBridgeTestUtils.normalizeTask({
+      id: "legacy-task",
+      status: "completed",
+      startedAt: "2026-07-14T09:40:10Z",
+      endedAt: "invalid",
+      runtime: "legacy-runtime",
+      error: "legacy error",
+    });
+
+    expect(session).toMatchObject({ model: "openclaw/default", agentRuntime: "openclaw", contextBudgetStatus: { status: "warning" } });
+    expect(session.updatedAt).toBeUndefined();
+    expect(session.startedAt).toBeUndefined();
+    expect(task.startedAt).toBe("2026-07-14T09:40:10.000Z");
+    expect(task.endedAt).toBeUndefined();
+    expect(task.runtime).toEqual({ id: "legacy-runtime" });
+    expect(task.error).toBe("legacy error");
+  });
+});
+
 describe("gateway session normalization", () => {
   it("marks sessions active from hasActiveRun and running status", () => {
     const active = gatewayBridgeTestUtils.normalizeSession({

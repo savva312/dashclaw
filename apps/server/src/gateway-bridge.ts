@@ -9,6 +9,11 @@ import type {
   NodeSummary,
   RuntimeSnapshot,
   SessionSummary,
+  CompactionCheckpointSummary,
+  ContextBudgetSummary,
+  DeliveryContextSummary,
+  SessionOriginSummary,
+  TaskRuntimeSummary,
   TaskSummary,
   TimelineEventKind,
 } from "@dashclaw/runtime-model";
@@ -421,24 +426,28 @@ function isRecentSession(updatedAt?: string): boolean {
 }
 
 function normalizeAgent(raw: unknown): AgentSummary {
-  const a = raw as Record<string, unknown>;
+  const a = asRecord(raw);
+  const runtime = normalizeRuntimeIdentity(a.runtime ?? a.agentRuntime);
   return {
     id: String(a.id ?? a.agentId ?? "unknown"),
     name: pickString(a, "name", "label"),
-    model: pickString(a, "model"),
-    runtime: pickString(a, "runtime", "agentRuntime"),
+    model: normalizeModel(a.model),
+    runtime: runtime.id,
+    runtimeSource: runtime.source,
+    thinkingDefault: pickString(a, "thinkingDefault"),
     workspace: pickString(a, "workspace"),
   };
 }
 
 function normalizeSession(raw: unknown): SessionSummary {
-  const s = raw as Record<string, unknown>;
+  const s = asRecord(raw);
   const key = String(s.key ?? s.sessionKey ?? "unknown");
   const agentId = pickString(s, "agentId") ?? parseAgentIdFromKey(key);
   const subagentRunState = pickString(s, "subagentRunState");
   const status = pickString(s, "status");
-  const processing = Boolean(s.processing);
-  const hasActiveRun = Boolean(s.hasActiveRun);
+  const processing = pickBoolean(s, "processing") ?? false;
+  const hasActiveRun = pickBoolean(s, "hasActiveRun") ?? false;
+  const agentRuntime = normalizeRuntimeIdentity(s.agentRuntime);
   const isActive =
     hasActiveRun ||
     status === "running" ||
@@ -446,7 +455,7 @@ function normalizeSession(raw: unknown): SessionSummary {
     processing ||
     subagentRunState === "running" ||
     subagentRunState === "active" ||
-    Boolean(s.isActive);
+    (pickBoolean(s, "isActive") ?? false);
   const rawWorktree =
     s.worktree && typeof s.worktree === "object" && !Array.isArray(s.worktree)
       ? (s.worktree as Record<string, unknown>)
@@ -462,25 +471,52 @@ function normalizeSession(raw: unknown): SessionSummary {
 
   return {
     key,
+    sessionId: pickString(s, "sessionId"),
+    kind: pickString(s, "kind"),
     agentId,
     parentSessionKey: pickString(s, "parentSessionKey"),
     spawnedBy: pickString(s, "spawnedBy"),
     ownerSessionKey: pickString(s, "ownerSessionKey"),
+    spawnDepth: pickNumber(s, "spawnDepth"),
+    subagentRole: pickString(s, "subagentRole"),
+    subagentControlScope: pickString(s, "subagentControlScope"),
+    forkedFromParent: pickBoolean(s, "forkedFromParent"),
     label: pickString(s, "label", "displayName", "name"),
-    model: pickString(s, "model"),
-    agentRuntime: pickString(s, "agentRuntime"),
-    updatedAt: normalizeTimestamp(pickString(s, "updatedAt", "lastInteractionAt")),
-    lastInteractionAt: normalizeTimestamp(pickString(s, "lastInteractionAt")),
+    model: normalizeModel(s.model),
+    modelProvider: pickString(s, "modelProvider"),
+    agentRuntime: agentRuntime.id,
+    agentRuntimeSource: agentRuntime.source,
+    startedAt: normalizeTimestamp(s.startedAt),
+    endedAt: normalizeTimestamp(s.endedAt),
+    runtimeMs: pickNumber(s, "runtimeMs"),
+    updatedAt: normalizeTimestamp(s.updatedAt ?? s.lastInteractionAt),
+    lastInteractionAt: normalizeTimestamp(s.lastInteractionAt),
     status,
     isActive,
+    hasActiveRun: pickBoolean(s, "hasActiveRun"),
+    hasActiveSubagentRun: pickBoolean(s, "hasActiveSubagentRun"),
+    subagentRunState,
+    abortedLastRun: pickBoolean(s, "abortedLastRun"),
     currentRunId: pickString(s, "runId", "currentRunId"),
     currentTool: pickString(s, "currentTool"),
+    inputTokens: pickNumber(s, "inputTokens"),
+    outputTokens: pickNumber(s, "outputTokens"),
+    totalTokens: pickNumber(s, "totalTokens"),
+    contextTokens: pickNumber(s, "contextTokens"),
+    estimatedCostUsd: pickNumber(s, "estimatedCostUsd"),
+    contextBudgetStatus: normalizeContextBudget(s.contextBudgetStatus),
+    compactionCheckpoint: normalizeCompactionCheckpoint(s.compactionCheckpoint),
+    deliveryContext: normalizeDeliveryContext(s.deliveryContext),
+    origin: normalizeSessionOrigin(s.origin),
+    spawnedWorkspaceDir: pickString(s, "spawnedWorkspaceDir"),
+    spawnedCwd: pickString(s, "spawnedCwd"),
     worktree,
   };
 }
 
 function normalizeTask(raw: unknown): TaskSummary {
-  const t = raw as Record<string, unknown>;
+  const t = asRecord(raw);
+  const error = normalizeError(t.error);
   return {
     id: String(t.id ?? t.taskId ?? randomUUID()),
     status: (t.status as TaskSummary["status"]) ?? "queued",
@@ -489,9 +525,20 @@ function normalizeTask(raw: unknown): TaskSummary {
     agentId: pickString(t, "agentId"),
     sessionKey: pickString(t, "sessionKey"),
     runId: pickString(t, "runId"),
-    startedAt: normalizeTimestamp(pickString(t, "startedAt")),
-    endedAt: normalizeTimestamp(pickString(t, "endedAt")),
-    error: pickString(t, "error"),
+    ownerKey: pickString(t, "ownerKey"),
+    childSessionKey: pickString(t, "childSessionKey"),
+    sourceId: pickString(t, "sourceId"),
+    flowId: pickString(t, "flowId"),
+    createdAt: normalizeTimestamp(t.createdAt),
+    updatedAt: normalizeTimestamp(t.updatedAt),
+    startedAt: normalizeTimestamp(t.startedAt),
+    endedAt: normalizeTimestamp(t.endedAt),
+    runtime: normalizeTaskRuntime(t.runtime),
+    progressSummary: pickString(t, "progressSummary"),
+    terminalSummary: pickString(t, "terminalSummary"),
+    error: error.message,
+    errorCode: error.code,
+    errorKind: error.kind,
   };
 }
 
@@ -536,13 +583,115 @@ function parseAgentIdFromKey(key: string): string | undefined {
   return match?.[1];
 }
 
-function normalizeTimestamp(value?: string): string | undefined {
-  if (!value) return undefined;
-  const n = Number(value);
-  if (Number.isFinite(n) && n > 1_000_000_000_000) {
-    return new Date(n).toISOString();
+function normalizeTimestamp(value: unknown): string | undefined {
+  if (typeof value !== "string" && typeof value !== "number") return undefined;
+  if (typeof value === "string" && value.trim().length === 0) return undefined;
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (Number.isFinite(numeric) && numeric >= 1_000_000_000_000) {
+    const date = new Date(numeric);
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
   }
-  return value;
+  if (typeof value !== "string") return undefined;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? undefined : new Date(parsed).toISOString();
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function normalizeModel(value: unknown): string | undefined {
+  if (typeof value === "string" && value.length > 0) return value;
+  return pickString(asRecord(value), "primary", "id", "name");
+}
+
+function normalizeRuntimeIdentity(value: unknown): { id?: string; source?: string } {
+  if (typeof value === "string" && value.length > 0) return { id: value };
+  const runtime = asRecord(value);
+  return { id: pickString(runtime, "id", "runtime"), source: pickString(runtime, "source") };
+}
+
+function normalizeContextBudget(value: unknown): ContextBudgetSummary | undefined {
+  if (typeof value === "string" && value.length > 0) return { status: value };
+  const budget = asRecord(value);
+  if (Object.keys(budget).length === 0) return undefined;
+  const result: ContextBudgetSummary = {
+    status: pickString(budget, "status", "level"),
+    reason: pickString(budget, "reason"),
+    budgetTokens: pickNumber(budget, "budgetTokens", "limitTokens"),
+    remainingTokens: pickNumber(budget, "remainingTokens"),
+    usedPercent: pickNumber(budget, "usedPercent", "percentUsed"),
+  };
+  return hasDefinedValue(result) ? result : undefined;
+}
+
+function normalizeCompactionCheckpoint(value: unknown): CompactionCheckpointSummary | undefined {
+  const checkpoint = asRecord(value);
+  if (Object.keys(checkpoint).length === 0) return undefined;
+  const result: CompactionCheckpointSummary = {
+    timestamp: normalizeTimestamp(checkpoint.timestamp ?? checkpoint.at ?? checkpoint.createdAt),
+    reason: pickString(checkpoint, "reason"),
+    tokensBefore: pickNumber(checkpoint, "tokensBefore"),
+    tokensAfter: pickNumber(checkpoint, "tokensAfter"),
+  };
+  return hasDefinedValue(result) ? result : undefined;
+}
+
+function normalizeDeliveryContext(value: unknown): DeliveryContextSummary | undefined {
+  const context = asRecord(value);
+  if (Object.keys(context).length === 0) return undefined;
+  const result: DeliveryContextSummary = {
+    channel: pickString(context, "channel"),
+    to: pickString(context, "to"),
+    accountId: pickString(context, "accountId"),
+    threadId: pickString(context, "threadId"),
+  };
+  return hasDefinedValue(result) ? result : undefined;
+}
+
+function normalizeSessionOrigin(value: unknown): SessionOriginSummary | undefined {
+  const origin = asRecord(value);
+  if (Object.keys(origin).length === 0) return undefined;
+  const result: SessionOriginSummary = {
+    provider: pickString(origin, "provider"),
+    surface: pickString(origin, "surface"),
+    chatType: pickString(origin, "chatType"),
+    accountId: pickString(origin, "accountId"),
+    channelId: pickString(origin, "channelId"),
+    threadId: pickString(origin, "threadId"),
+  };
+  return hasDefinedValue(result) ? result : undefined;
+}
+
+function normalizeTaskRuntime(value: unknown): TaskRuntimeSummary | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return { runtimeMs: value };
+  if (typeof value === "string" && value.length > 0) return { id: value };
+  const runtime = asRecord(value);
+  if (Object.keys(runtime).length === 0) return undefined;
+  const result: TaskRuntimeSummary = {
+    id: pickString(runtime, "id"),
+    source: pickString(runtime, "source"),
+    startedAt: normalizeTimestamp(runtime.startedAt),
+    endedAt: normalizeTimestamp(runtime.endedAt),
+    runtimeMs: pickNumber(runtime, "runtimeMs", "durationMs"),
+  };
+  return hasDefinedValue(result) ? result : undefined;
+}
+
+function normalizeError(value: unknown): { message?: string; code?: string; kind?: string } {
+  if (typeof value === "string" && value.length > 0) return { message: value };
+  const error = asRecord(value);
+  return {
+    message: pickString(error, "message", "summary"),
+    code: pickString(error, "code"),
+    kind: pickString(error, "kind", "name"),
+  };
+}
+
+function hasDefinedValue(value: object): boolean {
+  return Object.values(value).some((entry) => entry !== undefined);
 }
 
 function mapEventKind(name: string, p: Record<string, unknown>): TimelineEventKind | null {
@@ -631,6 +780,22 @@ function pickString(obj: Record<string, unknown>, ...keys: string[]): string | u
   for (const k of keys) {
     const v = obj[k];
     if (typeof v === "string" && v.length > 0) return v;
+  }
+  return undefined;
+}
+
+function pickNumber(obj: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+function pickBoolean(obj: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === "boolean") return value;
   }
   return undefined;
 }
@@ -962,7 +1127,9 @@ function applyLiveSessions(
 }
 
 export const gatewayBridgeTestUtils = {
+  normalizeAgent,
   normalizeSession,
+  normalizeTask,
   mergeAssistantText,
   createAssistantStreamAccumulator: () => new AssistantStreamAccumulator(),
   createLiveSessionTracker: () => {
