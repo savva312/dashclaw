@@ -670,7 +670,10 @@ function normalizeSession(raw: unknown): SessionSummary {
     contextTokens: pickNumber(s, "contextTokens"),
     estimatedCostUsd: pickNumber(s, "estimatedCostUsd"),
     contextBudgetStatus: normalizeContextBudget(s.contextBudgetStatus),
-    compactionCheckpoint: normalizeCompactionCheckpoint(s.compactionCheckpoint),
+    compactionCheckpointCount: pickNumber(s, "compactionCheckpointCount"),
+    latestCompactionCheckpoint: normalizeCompactionCheckpoint(
+      s.latestCompactionCheckpoint ?? s.compactionCheckpoint,
+    ),
     deliveryContext: normalizeDeliveryContext(s.deliveryContext),
     origin: normalizeSessionOrigin(s.origin),
     spawnedWorkspaceDir: pickString(s, "spawnedWorkspaceDir"),
@@ -783,6 +786,24 @@ function normalizeContextBudget(value: unknown): ContextBudgetSummary | undefine
   const budget = asRecord(value);
   if (Object.keys(budget).length === 0) return undefined;
   const result: ContextBudgetSummary = {
+    schemaVersion: pickNumber(budget, "schemaVersion"),
+    source: pickString(budget, "source"),
+    updatedAt: normalizeTimestamp(budget.updatedAt),
+    provider: pickString(budget, "provider"),
+    model: pickString(budget, "model"),
+    route: pickString(budget, "route"),
+    shouldCompact: pickBoolean(budget, "shouldCompact"),
+    estimatedPromptTokens: pickNumber(budget, "estimatedPromptTokens"),
+    contextTokenBudget: pickNumber(budget, "contextTokenBudget"),
+    promptBudgetBeforeReserve: pickNumber(budget, "promptBudgetBeforeReserve"),
+    reserveTokens: pickNumber(budget, "reserveTokens"),
+    effectiveReserveTokens: pickNumber(budget, "effectiveReserveTokens"),
+    remainingPromptBudgetTokens: pickNumber(budget, "remainingPromptBudgetTokens"),
+    overflowTokens: pickNumber(budget, "overflowTokens"),
+    toolResultReducibleChars: pickNumber(budget, "toolResultReducibleChars"),
+    messageCount: pickNumber(budget, "messageCount"),
+    unwindowedMessageCount: pickNumber(budget, "unwindowedMessageCount"),
+    sessionId: pickString(budget, "sessionId"),
     status: pickString(budget, "status", "level"),
     reason: pickString(budget, "reason"),
     budgetTokens: pickNumber(budget, "budgetTokens", "limitTokens"),
@@ -796,6 +817,8 @@ function normalizeCompactionCheckpoint(value: unknown): CompactionCheckpointSumm
   const checkpoint = asRecord(value);
   if (Object.keys(checkpoint).length === 0) return undefined;
   const result: CompactionCheckpointSummary = {
+    checkpointId: pickString(checkpoint, "checkpointId"),
+    createdAt: normalizeTimestamp(checkpoint.createdAt),
     timestamp: normalizeTimestamp(checkpoint.timestamp ?? checkpoint.at ?? checkpoint.createdAt),
     reason: pickString(checkpoint, "reason"),
     tokensBefore: pickNumber(checkpoint, "tokensBefore"),
@@ -811,7 +834,7 @@ function normalizeDeliveryContext(value: unknown): DeliveryContextSummary | unde
     channel: pickString(context, "channel"),
     to: pickString(context, "to"),
     accountId: pickString(context, "accountId"),
-    threadId: pickString(context, "threadId"),
+    threadId: pickStringOrNumber(context, "threadId"),
   };
   return hasDefinedValue(result) ? result : undefined;
 }
@@ -819,13 +842,15 @@ function normalizeDeliveryContext(value: unknown): DeliveryContextSummary | unde
 function normalizeSessionOrigin(value: unknown): SessionOriginSummary | undefined {
   const origin = asRecord(value);
   if (Object.keys(origin).length === 0) return undefined;
+  const nativeChannelId = pickStringOrNumber(origin, "nativeChannelId", "channelId");
   const result: SessionOriginSummary = {
     provider: pickString(origin, "provider"),
     surface: pickString(origin, "surface"),
     chatType: pickString(origin, "chatType"),
     accountId: pickString(origin, "accountId"),
-    channelId: pickString(origin, "channelId"),
-    threadId: pickString(origin, "threadId"),
+    nativeChannelId,
+    channelId: nativeChannelId,
+    threadId: pickStringOrNumber(origin, "threadId"),
   };
   return hasDefinedValue(result) ? result : undefined;
 }
@@ -1000,6 +1025,15 @@ function pickBoolean(obj: Record<string, unknown>, ...keys: string[]): boolean |
   return undefined;
 }
 
+function pickStringOrNumber(obj: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === "string" && value.length > 0) return value;
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return undefined;
+}
+
 const MAX_ASSISTANT_TEXT = 50_000;
 const MAX_ASSISTANT_STREAMS = 100;
 
@@ -1052,12 +1086,21 @@ class AssistantStreamAccumulator {
       if (stableIdentity || terminal) return null;
       this.terminalKeys.delete(key);
     }
+    let rolloverState: AssistantStreamState | undefined;
     if (responseId) {
+      const previousKey = this.activeResponseByScope.get(scope);
+      if (previousKey && previousKey !== key) {
+        const previous = this.streams.get(previousKey);
+        if (previous) {
+          rolloverState = { ...previous, text: "", responseId, sequence: undefined };
+        }
+        this.deleteStream(previousKey);
+      }
       this.streams.delete(scope);
       this.activeResponseByScope.set(scope, key);
     }
     const chunk = extractAssistantText(payload);
-    const existing = this.streams.get(key);
+    const existing = this.streams.get(key) ?? rolloverState;
     const sequence = pickNestedNumber(payload, "seq", "sequence");
     const sequenceDiagnostic = compareSequence(existing?.sequence, sequence);
     const replace = pickNestedBoolean(payload, "replace") ?? false;
@@ -1249,7 +1292,10 @@ function terminalFallbackText(state: string | undefined, payload: Record<string,
 
 function eventTimestamp(payload: Record<string, unknown>): string {
   const value = pickNestedValue(payload, "ts", "timestamp");
-  if (typeof value === "number" && Number.isFinite(value)) return new Date(value).toISOString();
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const date = new Date(value);
+    if (!Number.isNaN(date.getTime())) return date.toISOString();
+  }
   if (typeof value === "string" && !Number.isNaN(Date.parse(value))) return new Date(value).toISOString();
   return new Date().toISOString();
 }
@@ -1280,29 +1326,30 @@ function isTerminalBoundary(name: string, payload: Record<string, unknown>): boo
   return terminalStateFor(name, payload) !== undefined;
 }
 
+const TERMINAL_SESSION_STATES = new Set([
+  "final",
+  "done",
+  "completed",
+  "complete",
+  "failed",
+  "error",
+  "killed",
+  "timeout",
+  "timed_out",
+  "cancelled",
+  "canceled",
+  "aborted",
+  "end",
+  "ended",
+  "stop",
+  "stopped",
+]);
+
 function terminalStateFor(name: string, payload: Record<string, unknown>): string | undefined {
   const state = pickNestedString(payload, "state", "status", "phase", "event");
   if (!state) return name === "shutdown" ? "shutdown" : undefined;
   const normalized = state.toLowerCase();
-  return new Set([
-    "final",
-    "done",
-    "completed",
-    "complete",
-    "failed",
-    "error",
-    "timeout",
-    "timed_out",
-    "cancelled",
-    "canceled",
-    "aborted",
-    "end",
-    "ended",
-    "stop",
-    "stopped",
-  ]).has(normalized)
-    ? normalized
-    : undefined;
+  return TERMINAL_SESSION_STATES.has(normalized) ? normalized : undefined;
 }
 
 interface LiveSessionActivity {
@@ -1359,7 +1406,7 @@ function updateLiveSessionFromEvent(
       });
       return true;
     }
-    if (status === "done" || status === "failed" || status === "timeout") {
+    if (status && isLiveSessionTerminalState(status)) {
       return liveSessions.delete(sessionKey);
     }
     return false;
@@ -1385,7 +1432,10 @@ function updateLiveSessionFromEvent(
   if (name === "agent") {
     const stream = pickString(payload, "stream");
     const phase = pickString(payload, "phase");
-    if (stream === "tool" || (stream === "lifecycle" && phase !== "end" && phase !== "done")) {
+    if (stream === "lifecycle" && phase && isLiveSessionTerminalState(phase)) {
+      return liveSessions.delete(sessionKey);
+    }
+    if (stream === "tool" || stream === "lifecycle") {
       liveSessions.set(sessionKey, {
         agentId,
         status: "running",
@@ -1393,9 +1443,6 @@ function updateLiveSessionFromEvent(
         currentTool: stream === "tool" ? pickString(payload, "toolName", "name") : undefined,
       });
       return true;
-    }
-    if (stream === "lifecycle" && (phase === "end" || phase === "done")) {
-      return liveSessions.delete(sessionKey);
     }
     return false;
   }
@@ -1411,6 +1458,10 @@ function updateLiveSessionFromEvent(
   }
 
   return false;
+}
+
+function isLiveSessionTerminalState(state: string): boolean {
+  return TERMINAL_SESSION_STATES.has(state.toLowerCase());
 }
 
 function applyLiveSessions(

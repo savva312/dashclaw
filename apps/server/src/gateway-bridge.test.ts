@@ -41,8 +41,8 @@ describe("live OpenClaw contract normalization", () => {
       spawnedBy: "agent:main:main",
       ownerSessionKey: "agent:main:main",
       spawnDepth: 1,
-      subagentRole: "implementation",
-      subagentControlScope: "workspace",
+      subagentRole: "leaf",
+      subagentControlScope: "none",
       forkedFromParent: true,
       model: { primary: "openai/gpt-5.6-terra" },
       modelProvider: "openai",
@@ -62,16 +62,36 @@ describe("live OpenClaw contract normalization", () => {
       totalTokens: 1500,
       contextTokens: 128000,
       estimatedCostUsd: 0.125,
-      contextBudgetStatus: { status: "ok", remainingTokens: 126500, usedPercent: 1.17, raw: "not-copied" },
-      compactionCheckpoint: {
-        at: 1784041230000,
-        reason: "threshold",
-        tokensBefore: 90000,
-        tokensAfter: 30000,
+      contextBudgetStatus: {
+        schemaVersion: 1,
+        source: "pre-prompt-estimate",
+        updatedAt: 1784041220000,
+        provider: "openai",
+        model: "gpt-5.6-terra",
+        route: "fits",
+        shouldCompact: false,
+        estimatedPromptTokens: 1500,
+        contextTokenBudget: 128000,
+        promptBudgetBeforeReserve: 127000,
+        reserveTokens: 1000,
+        effectiveReserveTokens: 1000,
+        remainingPromptBudgetTokens: 125500,
+        overflowTokens: 0,
+        toolResultReducibleChars: 4000,
+        messageCount: 14,
+        unwindowedMessageCount: 14,
+        sessionId: "session-contract",
         raw: "not-copied",
       },
-      deliveryContext: { channel: "discord", to: "thread-1", accountId: "account-1", threadId: "thread-1", text: "not-copied" },
-      origin: { provider: "discord", surface: "channel", chatType: "thread", channelId: "channel-1", threadId: "thread-1", message: "not-copied" },
+      compactionCheckpointCount: 1,
+      latestCompactionCheckpoint: {
+        checkpointId: "checkpoint-1",
+        createdAt: 1784041230000,
+        reason: "auto-threshold",
+        raw: "not-copied",
+      },
+      deliveryContext: { channel: "discord", to: "thread-1", accountId: "account-1", threadId: 42, text: "not-copied" },
+      origin: { provider: "discord", surface: "channel", chatType: "thread", nativeChannelId: "channel-1", threadId: 42, message: "not-copied" },
       spawnedWorkspaceDir: "/workspace",
       spawnedCwd: "/workspace/dashclaw-task-042",
     });
@@ -92,15 +112,25 @@ describe("live OpenClaw contract normalization", () => {
       updatedAt: "2026-07-14T15:01:00.000Z",
       totalTokens: 1500,
       estimatedCostUsd: 0.125,
-      contextBudgetStatus: { status: "ok", remainingTokens: 126500, usedPercent: 1.17 },
-      compactionCheckpoint: {
-        timestamp: "2026-07-14T15:00:30.000Z",
-        reason: "threshold",
-        tokensBefore: 90000,
-        tokensAfter: 30000,
+      contextBudgetStatus: {
+        schemaVersion: 1,
+        source: "pre-prompt-estimate",
+        updatedAt: "2026-07-14T15:00:20.000Z",
+        route: "fits",
+        shouldCompact: false,
+        contextTokenBudget: 128000,
+        remainingPromptBudgetTokens: 125500,
+        overflowTokens: 0,
       },
-      deliveryContext: { channel: "discord", to: "thread-1", accountId: "account-1", threadId: "thread-1" },
-      origin: { provider: "discord", surface: "channel", chatType: "thread", channelId: "channel-1", threadId: "thread-1" },
+      compactionCheckpointCount: 1,
+      latestCompactionCheckpoint: {
+        checkpointId: "checkpoint-1",
+        createdAt: "2026-07-14T15:00:30.000Z",
+        timestamp: "2026-07-14T15:00:30.000Z",
+        reason: "auto-threshold",
+      },
+      deliveryContext: { channel: "discord", to: "thread-1", accountId: "account-1", threadId: "42" },
+      origin: { provider: "discord", surface: "channel", chatType: "thread", nativeChannelId: "channel-1", channelId: "channel-1", threadId: "42" },
       spawnedWorkspaceDir: "/workspace",
       spawnedCwd: "/workspace/dashclaw-task-042",
     });
@@ -458,6 +488,32 @@ describe("gateway session normalization", () => {
     ]);
     expect(idleSessions[0]?.isActive).toBe(false);
   });
+
+  it("clears every supported terminal variant from live session activity", () => {
+    const tracker = gatewayBridgeTestUtils.createLiveSessionTracker();
+    const killedKey = "agent:worker:subagent:killed";
+    const abortedKey = "agent:worker:subagent:aborted";
+
+    expect(tracker.update("session.message", { sessionKey: killedKey, status: "running" })).toBe(true);
+    expect(tracker.update("session.message", { sessionKey: killedKey, status: "killed" })).toBe(true);
+
+    expect(
+      tracker.update("agent", {
+        sessionKey: abortedKey,
+        stream: "lifecycle",
+        phase: "start",
+      }),
+    ).toBe(true);
+    expect(
+      tracker.update("agent", {
+        sessionKey: abortedKey,
+        stream: "lifecycle",
+        phase: "aborted",
+      }),
+    ).toBe(true);
+
+    expect(tracker.apply([])).toEqual([]);
+  });
 });
 
 describe("assistant stream accumulation", () => {
@@ -556,6 +612,38 @@ describe("assistant stream accumulation", () => {
     expect(restartedA?.text).toBe("New");
   });
 
+  it("rekeys a response-id rollover within one run without leaking or duplicating the accumulator", () => {
+    const streams = gatewayBridgeTestUtils.createAssistantStreamAccumulator();
+    const base = { sessionKey: "session-a", runId: "run-a" };
+    const first = streams.consume("chat", {
+      ...base,
+      responseId: "response-a",
+      state: "delta",
+      deltaText: "Old draft",
+    });
+    const rollover = streams.consume("chat", {
+      ...base,
+      responseId: "response-b",
+      state: "delta",
+      deltaText: "New response",
+    });
+    const final = streams.consume("chat", {
+      ...base,
+      responseId: "response-b",
+      state: "final",
+      text: "New response",
+    });
+
+    expect(rollover).toMatchObject({
+      timelineId: first?.timelineId,
+      responseId: "response-b",
+      text: "New response",
+    });
+    expect(final?.timelineId).toBe(first?.timelineId);
+    expect(streams.stats().active).toBe(0);
+    expect(streams.finalizeBoundary("session.message", { sessionKey: "session-a", status: "done" })).toEqual([]);
+  });
+
   it("terminates aborted and errored runs honestly and ignores duplicate terminals", () => {
     const streams = gatewayBridgeTestUtils.createAssistantStreamAccumulator();
     const abortedBase = { sessionKey: "session-a", runId: "run-abort", messageId: "message-abort" };
@@ -650,6 +738,19 @@ describe("assistant stream accumulation", () => {
       });
     }
     expect(streams.stats().terminal).toBe(200);
+  });
+
+  it("falls back safely for an out-of-range numeric event timestamp", () => {
+    const streams = gatewayBridgeTestUtils.createAssistantStreamAccumulator();
+    const update = streams.consume("chat", {
+      sessionKey: "session-a",
+      runId: "run-a",
+      state: "delta",
+      deltaText: "Safe",
+      ts: Number.MAX_SAFE_INTEGER,
+    });
+
+    expect(update?.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   it("keeps one response across an interleaved completed tool event", () => {

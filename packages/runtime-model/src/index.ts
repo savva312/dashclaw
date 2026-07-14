@@ -53,6 +53,25 @@ export interface AgentSummary {
 }
 
 export interface ContextBudgetSummary {
+  schemaVersion?: number;
+  source?: string;
+  updatedAt?: string;
+  provider?: string;
+  model?: string;
+  route?: string;
+  shouldCompact?: boolean;
+  estimatedPromptTokens?: number;
+  contextTokenBudget?: number;
+  promptBudgetBeforeReserve?: number;
+  reserveTokens?: number;
+  effectiveReserveTokens?: number;
+  remainingPromptBudgetTokens?: number;
+  overflowTokens?: number;
+  toolResultReducibleChars?: number;
+  messageCount?: number;
+  unwindowedMessageCount?: number;
+  sessionId?: string;
+  /** Legacy compatibility aliases retained for older Gateway payloads. */
   status?: string;
   reason?: string;
   budgetTokens?: number;
@@ -61,6 +80,8 @@ export interface ContextBudgetSummary {
 }
 
 export interface CompactionCheckpointSummary {
+  checkpointId?: string;
+  createdAt?: string;
   timestamp?: string;
   reason?: string;
   tokensBefore?: number;
@@ -79,6 +100,7 @@ export interface SessionOriginSummary {
   surface?: string;
   chatType?: string;
   accountId?: string;
+  nativeChannelId?: string;
   channelId?: string;
   threadId?: string;
 }
@@ -126,6 +148,9 @@ export interface SessionSummary {
   contextTokens?: number;
   estimatedCostUsd?: number;
   contextBudgetStatus?: ContextBudgetSummary;
+  compactionCheckpointCount?: number;
+  latestCompactionCheckpoint?: CompactionCheckpointSummary;
+  /** Legacy snapshot compatibility. New Gateway rows use latestCompactionCheckpoint. */
   compactionCheckpoint?: CompactionCheckpointSummary;
   deliveryContext?: DeliveryContextSummary;
   origin?: SessionOriginSummary;

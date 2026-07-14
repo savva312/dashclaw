@@ -13,6 +13,7 @@ export type AttentionCategory = "intervention" | "access" | "security";
 export type AttentionKind =
   | "gateway"
   | "health"
+  | "session-discovery"
   | "stale-snapshot"
   | "task-failed"
   | "lost-task"
@@ -614,7 +615,11 @@ export function buildDashboardModel(
     failedTasks,
   });
   const isStale = isOlderThan(snapshot.updatedAt, nowMs, snapshotStaleAfterMs);
-  const isLive = snapshot.connectionState === "connected" && !isStale && snapshot.health?.degraded !== true;
+  const isLive =
+    snapshot.connectionState === "connected" &&
+    !isStale &&
+    snapshot.health?.degraded !== true &&
+    snapshot.discovery?.sessions.degraded !== true;
   const workingAgents = agents.filter((agent) => agent.state === "working").length;
 
   return {
@@ -681,6 +686,18 @@ function buildRuntimeStatusSummary(
       tone: "warn",
       label: "Gateway degraded",
       summary: "Dashclaw is connected, but the gateway reports degraded health. Some runtime surfaces may be incomplete.",
+      empty,
+    };
+  }
+
+  if (snapshot.discovery?.sessions.degraded === true) {
+    const discovery = snapshot.discovery.sessions;
+    return {
+      tone: "warn",
+      label: "Session discovery incomplete",
+      summary: discovery.retainedLastComplete
+        ? `The latest session page cycle was incomplete (${discovery.reason ?? "unknown reason"}); showing the last complete set of ${discovery.publishedSessions} sessions.`
+        : `The latest session page cycle was incomplete (${discovery.reason ?? "unknown reason"}); only ${discovery.publishedSessions} sessions are currently available.`,
       empty,
     };
   }
@@ -1811,6 +1828,7 @@ function nextActionForAttention(item: AttentionItem): string {
   switch (item.kind) {
     case "gateway":
     case "health":
+    case "session-discovery":
     case "stale-snapshot":
     case "access":
       return "Verify gateway/access state before relying on the dashboard.";
@@ -2856,6 +2874,22 @@ function buildAttentionItems(
     });
   }
 
+  if (snapshot.discovery?.sessions.degraded === true) {
+    const discovery = snapshot.discovery.sessions;
+    items.push({
+      id: "snapshot:session-discovery",
+      kind: "session-discovery",
+      category: "access",
+      tone: "warn",
+      title: "Session discovery is incomplete",
+      summary: discovery.retainedLastComplete
+        ? `Showing the last complete set of ${discovery.publishedSessions} sessions because the latest cycle ended with ${discovery.reason ?? "an unknown error"}.`
+        : `Only ${discovery.publishedSessions} sessions were published before ${discovery.reason ?? "an unknown error"}.`,
+      timestamp: snapshot.updatedAt,
+      links: { timeline: "/timeline" },
+    });
+  }
+
   if (isOlderThan(snapshot.updatedAt, context.nowMs, context.snapshotStaleAfterMs)) {
     items.push({
       id: "snapshot:stale",
@@ -3690,22 +3724,24 @@ function rankAttentionKind(kind: AttentionKind): number {
       return 0;
     case "health":
       return 1;
-    case "security-posture":
+    case "session-discovery":
       return 2;
-    case "approval":
+    case "security-posture":
       return 3;
-    case "task-failed":
+    case "approval":
       return 4;
-    case "lost-task":
+    case "task-failed":
       return 5;
-    case "access":
+    case "lost-task":
       return 6;
-    case "long-running-task":
+    case "access":
       return 7;
-    case "stale-active-session":
+    case "long-running-task":
       return 8;
-    case "stale-snapshot":
+    case "stale-active-session":
       return 9;
+    case "stale-snapshot":
+      return 10;
   }
 }
 

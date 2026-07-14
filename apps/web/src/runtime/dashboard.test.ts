@@ -99,6 +99,39 @@ describe("dashboard selectors", () => {
     expect(degraded.runtimeStatus).toMatchObject({ tone: "warn", label: "Gateway degraded" });
     expect(degraded.isLive).toBe(false);
 
+    const incompleteDiscovery = buildDashboardModel(
+      snapshot({
+        discovery: {
+          sessions: {
+            state: "incomplete",
+            degraded: true,
+            pagesFetched: 1,
+            rowsFetched: 100,
+            uniqueSessionsFetched: 100,
+            publishedSessions: 125,
+            reason: "page-error",
+            retainedLastComplete: true,
+          },
+        },
+      }),
+      [],
+      { nowMs: now },
+    );
+    expect(incompleteDiscovery.isLive).toBe(false);
+    expect(incompleteDiscovery.runtimeStatus).toMatchObject({
+      tone: "warn",
+      label: "Session discovery incomplete",
+      summary: expect.stringContaining("last complete set of 125 sessions"),
+    });
+    expect(incompleteDiscovery.attention).toContainEqual(
+      expect.objectContaining({
+        id: "snapshot:session-discovery",
+        kind: "session-discovery",
+        tone: "warn",
+        summary: expect.stringContaining("last complete set of 125 sessions"),
+      }),
+    );
+
     const stale = buildDashboardModel(
       snapshot({ updatedAt: "2026-06-22T11:58:00.000Z" }),
       [],
