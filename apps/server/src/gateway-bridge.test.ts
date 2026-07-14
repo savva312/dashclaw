@@ -182,6 +182,20 @@ describe("live OpenClaw contract normalization", () => {
     expect(task.runtime).toEqual({ id: "legacy-runtime" });
     expect(task.error).toBe("legacy error");
   });
+
+  it("redacts task summaries and structured errors at the normalization boundary", () => {
+    const task = gatewayBridgeTestUtils.normalizeTask({
+      id: "sensitive-task",
+      status: "failed",
+      progressSummary: 'Calling with token="progress-secret"',
+      terminalSummary: 'Finished with password="result-secret"',
+      error: { message: 'Provider apiKey="error-secret"', code: "PROVIDER_ERROR", kind: "provider" },
+    });
+
+    expect(task.progressSummary).toBe('Calling with token="[REDACTED]"');
+    expect(task.terminalSummary).toBe('Finished with password="[REDACTED]"');
+    expect(task.error).toBe('Provider apiKey="[REDACTED]"');
+  });
 });
 
 describe("session discovery pagination", () => {

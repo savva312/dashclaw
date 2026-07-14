@@ -119,6 +119,39 @@ describe("GatewayClient", () => {
     client.disconnect();
   });
 
+  it("serves live-shaped task progress, results, lineage, runtime, and missing-summary variants", async () => {
+    fake = await startFakeGateway({ token: "test-token", scenario: "task-contract" });
+    const client = new GatewayClient({
+      url: fake.url,
+      token: "test-token",
+      reconnect: false,
+      WebSocketImpl: WebSocket as unknown as typeof globalThis.WebSocket,
+    });
+    await client.connect();
+
+    const result = await client.call<{ tasks: Array<Record<string, unknown>> }>("tasks.list");
+    expect(result.tasks).toHaveLength(82);
+    expect(result.tasks.find((task) => task.id === "task-contract-running")).toMatchObject({
+      progressSummary: "Inspecting task lifecycle and result fields",
+      ownerKey: "agent:main:main",
+      childSessionKey: "agent:worker:subagent",
+      flowId: "flow-contract",
+      runtime: expect.any(Object),
+    });
+    expect(result.tasks.find((task) => task.id === "task-contract-success")).toMatchObject({
+      terminalSummary: "Validated all supported task fields",
+    });
+    expect(result.tasks.find((task) => task.id === "task-contract-failed")?.error).toEqual({
+      message: "Task schema mismatch",
+      code: "TASK_SCHEMA_MISMATCH",
+      kind: "validation",
+      stack: "not exposed",
+    });
+    expect(result.tasks.find((task) => task.id === "task-contract-missing-summary")).not.toHaveProperty("terminalSummary");
+
+    client.disconnect();
+  });
+
   it("receives pushed events", async () => {
     fake = await startFakeGateway({ token: "test-token" });
     const client = new GatewayClient({

@@ -2081,10 +2081,22 @@ textarea {
   width: 36%;
 }
 
-.tasks-table td:nth-child(3),
 .tasks-table td:nth-child(4),
-.tasks-table td:nth-child(5) {
+.tasks-table td:nth-child(5),
+.tasks-table td:nth-child(6) {
   font-size: 0.82rem;
+}
+
+.task-ledger-cue,
+.work-board-task-cue {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 12rem;
+}
+
+.task-ledger-cue .badge,
+.work-board-task-cue .badge {
+  justify-self: start;
 }
 
 .thread-map-truncation {
@@ -2237,6 +2249,100 @@ textarea {
 .task-detail-page {
   display: grid;
   gap: 1rem;
+}
+
+.task-detail-hero {
+  align-items: flex-start;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.task-detail-error {
+  color: var(--error);
+  max-width: 42rem;
+}
+
+.task-detail-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+}
+
+.task-evidence-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.task-evidence-card {
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.75rem;
+}
+
+.task-evidence-card p {
+  color: var(--text-muted);
+  margin: 0.55rem 0 0;
+  white-space: pre-wrap;
+}
+
+.task-evidence-available {
+  border-color: color-mix(in srgb, var(--success) 45%, var(--border));
+}
+
+.task-evidence-head {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.task-context-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+
+.task-context-list > div {
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(7rem, 0.4fr) minmax(0, 1fr);
+  padding: 0.55rem 0;
+}
+
+.task-context-list > div:last-child {
+  border-bottom: 0;
+}
+
+.task-context-list dt {
+  color: var(--text-muted);
+}
+
+.task-context-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.task-event-list {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.task-event-row {
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(8rem, auto) 1fr;
+  padding-bottom: 0.75rem;
+}
+
+.task-event-meta {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
 }
 
 .approvals-header,

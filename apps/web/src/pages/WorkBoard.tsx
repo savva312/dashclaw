@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAppState } from "../context";
-import { buildDashboardModel, type AttentionTone, type DeliveryRecoveryState, type ReviewItem, type WorkBoardColumn, type WorkItem } from "../runtime/dashboard";
+import { buildDashboardModel, taskLedgerCue, type AttentionTone, type DeliveryRecoveryState, type ReviewItem, type WorkBoardColumn, type WorkItem } from "../runtime/dashboard";
 import { formatCompactTitle } from "../lib/format";
 
 function badgeClassForTone(tone: AttentionTone | "ok") {
@@ -59,7 +59,7 @@ function matchesQuery(item: WorkItem, query: string): boolean {
     item.lineage.diagnostic,
     ...item.evidence.agents.map((agent) => `${agent.name ?? ""} ${agent.id}`),
     ...item.evidence.sessions.map((session) => `${session.label ?? ""} ${session.key} ${session.status ?? ""}`),
-    ...item.evidence.tasks.map((task) => `${task.title ?? ""} ${task.id} ${task.runId ?? ""} ${task.status}`),
+    ...item.evidence.tasks.map((task) => `${task.title ?? ""} ${task.id} ${task.runId ?? ""} ${task.status} ${task.progressSummary ?? ""} ${task.terminalSummary ?? ""} ${task.ownerKey ?? ""} ${task.childSessionKey ?? ""} ${task.sourceId ?? ""} ${task.flowId ?? ""}`),
     ...item.evidence.approvals.map((approval) => `${approval.id} ${approval.command ?? ""} ${approval.status}`),
     item.deliveryRecovery.label,
     item.deliveryRecovery.status,
@@ -258,6 +258,7 @@ function ReviewQueueCard({ item }: { item: ReviewItem }) {
 function WorkBoardCard({ item, compact = false }: { item: WorkItem; compact?: boolean }) {
   const primaryLink = item.links.task ?? item.links.session ?? item.links.agent ?? item.links.approval ?? item.links.timeline;
   const incomplete = item.lineage.quality !== "complete";
+  const taskCue = item.evidence.tasks[0] ? taskLedgerCue(item.evidence.tasks[0]) : undefined;
 
   return (
     <article className={`work-board-card work-board-card-${badgeClassForTone(item.tone)}${compact ? " work-board-card-compact" : ""}`}>
@@ -265,6 +266,12 @@ function WorkBoardCard({ item, compact = false }: { item: WorkItem; compact?: bo
         <strong className="text-clamp-2">{primaryLink ? <Link to={primaryLink} title={item.title}>{formatCompactTitle(item.title)}</Link> : formatCompactTitle(item.title)}</strong>
         <span className={`badge ${badgeClassForTone(item.tone)}`}>{item.state}</span>
       </div>
+      {taskCue ? (
+        <div className="work-board-task-cue">
+          <span className={`badge ${taskCue.availability === "available" ? "ok" : "neutral"}`}>{taskCue.label}</span>
+          {taskCue.summary ? <span className="text-clamp-2">{taskCue.summary}</span> : null}
+        </div>
+      ) : null}
       {item.summary ? <p className="work-board-card-summary text-clamp-2">{item.summary}</p> : null}
       <dl className="work-board-evidence">
         <div>

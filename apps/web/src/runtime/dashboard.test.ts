@@ -1149,6 +1149,16 @@ describe("dashboard selectors", () => {
             status: "running",
             agentId: "agent-a",
             sessionKey: "session-1",
+            runId: "run-1",
+            ownerKey: "agent:agent-a:main",
+            childSessionKey: "session-1",
+            sourceId: "dashboard",
+            flowId: "flow-1",
+            createdAt: "2026-06-22T11:49:00.000Z",
+            updatedAt: "2026-06-22T11:59:00.000Z",
+            startedAt: "2026-06-22T11:50:00.000Z",
+            progressSummary: "Reviewing normalized task fields",
+            runtime: { id: "runtime-1", source: "gateway", runtimeMs: 540000 },
           },
         ],
       }),
@@ -1164,6 +1174,60 @@ describe("dashboard selectors", () => {
       session: "/agents/agent-a/sessions/session-1",
       task: "/tasks/task-1",
     });
+    expect(detail?.execution).toEqual({
+      progress: { availability: "available", label: "Current progress", summary: "Reviewing normalized task fields" },
+      result: { availability: "not-applicable", label: "Terminal result pending" },
+      failure: { availability: "not-applicable", label: "No failure reported" },
+      runtimeMs: 540000,
+      runtimeSource: "gateway",
+    });
+  });
+
+  it("keeps missing terminal summaries unavailable without inferring delivery failure", () => {
+    const resultSession = "agent:agent-a:subagent:result";
+    const missingSession = "agent:agent-a:subagent:missing";
+    const model = buildDashboardModel(
+      snapshot({
+        sessions: [
+          { key: resultSession, agentId: "agent-a", status: "completed" },
+          { key: missingSession, agentId: "agent-a", status: "completed" },
+        ],
+        tasks: [
+          {
+            id: "task-result-available",
+            status: "completed",
+            agentId: "agent-a",
+            sessionKey: resultSession,
+            terminalSummary: "Contract checks passed",
+          },
+          {
+            id: "task-result-unavailable",
+            status: "completed",
+            agentId: "agent-a",
+            sessionKey: missingSession,
+          },
+        ],
+      }),
+      [],
+      { nowMs: now },
+    );
+
+    const byTask = new Map(model.workBoard.items.flatMap((item) => item.evidence.tasks.map((task) => [task.id, item])));
+    expect(byTask.get("task-result-available")?.deliveryRecovery).toMatchObject({
+      status: "unknown",
+      label: "Result available; delivery unknown",
+      resultVisible: true,
+      needsRecovery: false,
+      inferred: false,
+    });
+    expect(byTask.get("task-result-unavailable")?.deliveryRecovery).toMatchObject({
+      status: "unknown",
+      label: "Terminal result unavailable",
+      resultVisible: false,
+      needsRecovery: false,
+      inferred: false,
+    });
+    expect(model.deliveryRecoveryQueue.items).toEqual([]);
   });
 
   it("builds a review queue for completed, failed, cancelled, delivered, and since-last-seen work", () => {
@@ -1386,14 +1450,13 @@ describe("dashboard selectors", () => {
     expect(byTask.get("task-queued-result")).toMatchObject({ status: "queued", known: true, needsRecovery: true });
     expect(byTask.get("task-failed-result-delivery")).toMatchObject({ status: "failed-delivery", inferred: true, needsRecovery: true });
     expect(byTask.get("task-lost-parent-result")).toMatchObject({ status: "lost-parent", inferred: true, needsRecovery: true });
-    expect(byTask.get("task-silent-terminal-result")).toMatchObject({ status: "silent-terminal", metadataGaps: expect.arrayContaining(["safe user-visible result body/receipt metadata missing"]) });
+    expect(byTask.get("task-silent-terminal-result")).toMatchObject({ status: "unknown", label: "Terminal result unavailable", inferred: false, needsRecovery: false });
 
-    expect(model.deliveryRecoveryQueue.summary).toMatchObject({ total: 4, queued: 1, failedDelivery: 1, lostParent: 1, silentTerminal: 1 });
+    expect(model.deliveryRecoveryQueue.summary).toMatchObject({ total: 3, queued: 1, failedDelivery: 1, lostParent: 1, silentTerminal: 0 });
     expect(model.deliveryRecoveryQueue.items.map((item) => item.task.id)).toEqual([
       "task-failed-result-delivery",
       "task-lost-parent-result",
       "task-queued-result",
-      "task-silent-terminal-result",
     ]);
     expect(model.deliveryRecoveryQueue.metadataGaps).toEqual(expect.arrayContaining(["safe resend/reinject metadata missing"]));
 
@@ -1494,8 +1557,8 @@ describe("dashboard selectors", () => {
     ]);
 
     const silent = model.workBoard.items.find((item) => item.links.task === "/tasks/task-silent-recovery");
-    expect(silent?.deliveryRecovery).toMatchObject({ status: "silent-terminal", known: false, inferred: true });
-    expect(model.deliveryRecoveryQueue.summary).toMatchObject({ total: 2, failedDelivery: 1, silentTerminal: 1 });
+    expect(silent?.deliveryRecovery).toMatchObject({ status: "unknown", label: "Terminal result unavailable", known: false, inferred: false, needsRecovery: false });
+    expect(model.deliveryRecoveryQueue.summary).toMatchObject({ total: 1, failedDelivery: 1, silentTerminal: 0 });
   });
 
   it("models the exec approval cockpit as read-only evidence across pending, expired, consumed, sync, and full-mode states", () => {

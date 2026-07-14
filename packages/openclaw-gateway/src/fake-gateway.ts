@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 
-export const FAKE_GATEWAY_SCENARIOS = ["idle", "busy", "failed", "approval-heavy", "approval-cockpit", "degraded", "discord-workflow", "session-pagination"] as const;
+export const FAKE_GATEWAY_SCENARIOS = ["idle", "busy", "failed", "approval-heavy", "approval-cockpit", "degraded", "discord-workflow", "session-pagination", "task-contract"] as const;
 export type FakeGatewayScenario = (typeof FAKE_GATEWAY_SCENARIOS)[number];
 
 export interface FakeGatewayOptions {
@@ -408,6 +408,8 @@ function buildScenarioData(scenario: FakeGatewayScenario): FakeGatewayScenarioDa
           ),
         ),
       };
+    case "task-contract":
+      return taskContractScenarioData(common);
     case "busy":
       return common;
   }
@@ -430,6 +432,85 @@ function paginateSessions(sessions: JsonObject[], params?: Record<string, unknow
     total: sessions.length,
     hasMore,
     ...(hasMore ? { nextOffset } : {}),
+  };
+}
+
+function taskContractScenarioData(common: FakeGatewayScenarioData): FakeGatewayScenarioData {
+  const retainedRows = Array.from({ length: 77 }, (_, index) =>
+    task(
+      `task-contract-retained-${String(index + 1).padStart(2, "0")}`,
+      "completed",
+      `Retained task contract row ${index + 1}`,
+      index % 2 === 0 ? "worker" : "qa",
+      index % 2 === 0 ? "agent:worker:subagent" : "agent:qa:queued",
+      `run-contract-retained-${index + 1}`,
+      -(30 + index) * 60_000,
+      -(29 + index) * 60_000,
+      undefined,
+      {
+        kind: "contract-sample",
+        ownerKey: "agent:main:main",
+        sourceId: "sanitized-live-probe",
+        createdAt: BASE_TIME - (31 + index) * 60_000,
+        updatedAt: BASE_TIME - (29 + index) * 60_000,
+        terminalSummary: `Sanitized retained result ${index + 1}`,
+        runtime: { source: "gateway", runtimeMs: 60_000 },
+      },
+    ),
+  );
+  return {
+    ...common,
+    tasks: [
+      task("task-contract-running", "running", "Inspect live task contract", "main", "agent:main:main", "run-contract-running", -6 * 60_000, undefined, undefined, {
+        kind: "main",
+        taskId: "task-contract-running",
+        ownerKey: "agent:main:main",
+        childSessionKey: "agent:worker:subagent",
+        sourceId: "dashboard",
+        flowId: "flow-contract",
+        createdAt: BASE_TIME - 7 * 60_000,
+        updatedAt: BASE_TIME - 20_000,
+        startedAt: BASE_TIME - 6 * 60_000,
+        progressSummary: "Inspecting task lifecycle and result fields",
+        runtime: { id: "runtime-contract-running", source: "gateway", startedAt: BASE_TIME - 6 * 60_000, runtimeMs: 340_000 },
+      }),
+      task("task-contract-success", "completed", "Complete contract inspection", "worker", "agent:worker:subagent", "run-contract-success", -12 * 60_000, -9 * 60_000, undefined, {
+        kind: "subagent",
+        ownerKey: "agent:main:main",
+        childSessionKey: "agent:worker:subagent",
+        sourceId: "subagent-registry",
+        flowId: "flow-contract",
+        createdAt: BASE_TIME - 13 * 60_000,
+        updatedAt: BASE_TIME - 9 * 60_000,
+        startedAt: BASE_TIME - 12 * 60_000,
+        endedAt: BASE_TIME - 9 * 60_000,
+        progressSummary: "Validated 81 of 82 task rows",
+        terminalSummary: "Validated all supported task fields",
+        runtime: { id: "runtime-contract-success", source: "gateway", startedAt: BASE_TIME - 12 * 60_000, endedAt: BASE_TIME - 9 * 60_000, runtimeMs: 180_000 },
+      }),
+      task("task-contract-failed", "failed", "Validate structured task error", "qa", "agent:qa:queued", "run-contract-failed", -18 * 60_000, -15 * 60_000, undefined, {
+        kind: "validation",
+        sourceId: "contract-test",
+        createdAt: BASE_TIME - 19 * 60_000,
+        updatedAt: BASE_TIME - 15 * 60_000,
+        terminalSummary: "Validation stopped after a schema mismatch",
+        error: { message: "Task schema mismatch", code: "TASK_SCHEMA_MISMATCH", kind: "validation", stack: "not exposed" },
+        runtime: { source: "gateway", runtimeMs: 180_000 },
+      }),
+      task("task-contract-missing-summary", "completed", "Terminal task without summary", "qa", "agent:qa:queued", "run-contract-missing", -24 * 60_000, -22 * 60_000, undefined, {
+        kind: "validation",
+        sourceId: "contract-test",
+        createdAt: BASE_TIME - 25 * 60_000,
+        updatedAt: BASE_TIME - 22 * 60_000,
+      }),
+      task("task-contract-queued", "queued", "Await contract worker", "worker", "agent:worker:subagent", "run-contract-queued", -60_000, undefined, undefined, {
+        ownerKey: "agent:main:main",
+        childSessionKey: "agent:worker:subagent",
+        sourceId: "dashboard",
+      }),
+      ...retainedRows,
+    ],
+    logs: ["[info] 82-row sanitized task contract fixture loaded with running, terminal, failed, missing-summary, flow, and child variants"],
   };
 }
 
@@ -515,11 +596,22 @@ function discordWorkflowScenarioData(common: FakeGatewayScenarioData): FakeGatew
       task("task-work-board", "running", "Implement work board fixture", "dashclaw", workBoardThread, "run-thread-work-board", -35 * 60_000, undefined, undefined, {
         kind: "discord-thread",
         parentSessionKey: mainChannel,
+        ownerKey: mainChannel,
+        childSessionKey: subagentSession,
+        sourceId: "discord-work-board",
+        flowId: "flow-work-board",
+        progressSummary: "Coordinating fixture implementation and review",
+        runtime: { id: "run-thread-work-board", source: "gateway", runtimeMs: 34 * 60_000 },
       }),
       task("task-fixture-model-lane", "running", "Inspect fake gateway runtime model", "fixture-model", subagentSession, "run-subagent-fixture", -8 * 60_000, undefined, undefined, {
         kind: "subagent",
         parentTaskId: "task-work-board",
         parentSessionKey: workBoardThread,
+        ownerKey: workBoardThread,
+        childSessionKey: subagentSession,
+        sourceId: "subagent-registry",
+        flowId: "flow-work-board",
+        progressSummary: "Inspecting runtime model fields",
       }),
       task("task-acp-review", "queued", "Review fixture extension", "coder", acpSession, "run-acp-fixture", -2 * 60_000, undefined, undefined, {
         kind: "acp",
@@ -531,6 +623,11 @@ function discordWorkflowScenarioData(common: FakeGatewayScenarioData): FakeGatew
         kind: "discord-thread",
         deliveryState: "delivered",
         finalSummary: "Completed summary was delivered to Discord.",
+        terminalSummary: "Completed summary was delivered to Discord.",
+        ownerKey: mainChannel,
+        sourceId: "discord-work-board",
+        flowId: "flow-summary",
+        runtime: { id: "run-thread-summary", source: "gateway", runtimeMs: 8 * 60_000 },
       }),
       task("task-failed-delivery", "failed", "Investigate failed delivery", "dashclaw", failedThread, "run-failed-delivery", -25 * 60_000, -12 * 60_000, "Discord result delivery failed after thread handoff", {
         kind: "discord-thread",

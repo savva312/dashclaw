@@ -1,7 +1,12 @@
 import { Link, useParams } from "react-router-dom";
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import { useAppState } from "../context";
-import { buildTaskDetailModel, type DeliveryRecoveryState } from "../runtime/dashboard";
+import type { SessionSummary } from "@dashclaw/runtime-model";
+import {
+  buildTaskDetailModel,
+  type DeliveryRecoveryState,
+  type TaskNarrativeEvidence,
+} from "../runtime/dashboard";
 import { Badge, EmptyState, Panel, PanelHeader } from "../ui";
 
 function formatClock(iso?: string): string {
@@ -9,6 +14,18 @@ function formatClock(iso?: string): string {
   const ms = Date.parse(iso);
   if (Number.isNaN(ms)) return iso;
   return new Date(ms).toLocaleString();
+}
+
+function formatDuration(ms?: number): string {
+  if (ms === undefined || !Number.isFinite(ms)) return "unavailable";
+  if (ms < 1_000) return `${ms} ms`;
+  const totalSeconds = Math.floor(ms / 1_000);
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  return [hours ? `${hours}h` : "", minutes ? `${minutes}m` : "", seconds || (!hours && !minutes) ? `${seconds}s` : ""]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function taskTone(status: string): "ok" | "warn" | "error" | "neutral" {
@@ -48,7 +65,7 @@ export function TaskDetailPage() {
     );
   }
 
-  const { task, agent, session, events, links, deliveryRecovery } = detail;
+  const { task, agent, session, events, links, execution, deliveryRecovery } = detail;
 
   return (
     <div className="page-shell task-detail-page">
@@ -99,6 +116,28 @@ export function TaskDetailPage() {
       </section>
 
       <div className="task-detail-grid">
+        <Panel>
+          <PanelHeader title="Progress, Result & Failure" />
+          <div className="task-evidence-grid">
+            <TaskNarrativeCard evidence={execution.progress} />
+            <TaskNarrativeCard evidence={execution.result} />
+            <TaskNarrativeCard evidence={execution.failure} />
+          </div>
+        </Panel>
+
+        <Panel>
+          <PanelHeader title="Lifecycle & Runtime" />
+          <dl className="task-context-list">
+            <ContextRow label="Created" value={formatClock(task.createdAt)} />
+            <ContextRow label="Updated" value={formatClock(task.updatedAt)} />
+            <ContextRow label="Started" value={formatClock(task.startedAt ?? task.runtime?.startedAt)} />
+            <ContextRow label="Ended" value={formatClock(task.endedAt ?? task.runtime?.endedAt)} />
+            <ContextRow label="Runtime" value={formatDuration(execution.runtimeMs)} />
+            <ContextRow label="Runtime id" value={task.runtime?.id ?? "unavailable"} mono />
+            <ContextRow label="Runtime source" value={execution.runtimeSource ?? "unavailable"} mono />
+          </dl>
+        </Panel>
+
         <Panel>
           <PanelHeader title="Result Delivery / Recovery" aside={<Badge tone={deliveryTone(deliveryRecovery)}>{deliveryRecovery.label}</Badge>} />
           <div className="delivery-recovery-card task-detail-delivery-card">
@@ -157,32 +196,79 @@ export function TaskDetailPage() {
         </Panel>
 
         <Panel>
-          <PanelHeader title="Context" />
+          <PanelHeader title="Identifiers & Lineage" />
           <dl className="task-context-list">
-            <div>
-              <dt>Status</dt>
-              <dd>{task.status}</dd>
-            </div>
-            <div>
-              <dt>Agent id</dt>
-              <dd className="mono">{task.agentId ?? "-"}</dd>
-            </div>
-            <div>
-              <dt>Session key</dt>
-              <dd className="mono">{task.sessionKey ?? "-"}</dd>
-            </div>
-            <div>
-              <dt>Run id</dt>
-              <dd className="mono">{task.runId ?? "-"}</dd>
-            </div>
-            <div>
-              <dt>Error</dt>
-              <dd>{task.error ?? "-"}</dd>
-            </div>
+            <ContextRow label="Status" value={task.status} />
+            <ContextRow label="Agent id" value={task.agentId ?? "unavailable"} mono href={links.agent} />
+            <ContextRow label="Session key" value={task.sessionKey ?? "unavailable"} mono href={links.session} />
+            <ContextRow label="Run id" value={task.runId ?? "unavailable"} mono />
+            <ContextRow label="Owner key" mono valueNode={<TaskSessionReference sessionKey={task.ownerKey} sessions={snapshot.sessions} fallbackAgentId={task.agentId} />} />
+            <ContextRow label="Child session" mono valueNode={<TaskSessionReference sessionKey={task.childSessionKey} sessions={snapshot.sessions} fallbackAgentId={task.agentId} />} />
+            <ContextRow label="Source id" value={task.sourceId ?? "unavailable"} mono />
+            <ContextRow label="Flow id" value={task.flowId ?? "unavailable"} mono />
+            <ContextRow label="Error code" value={task.errorCode ?? "unavailable"} mono />
+            <ContextRow label="Error kind" value={task.errorKind ?? "unavailable"} mono />
           </dl>
         </Panel>
       </div>
     </div>
+  );
+}
+
+function TaskNarrativeCard({ evidence }: { evidence: TaskNarrativeEvidence }) {
+  const tone = evidence.availability === "available" ? "ok" : "neutral";
+  const fallback = evidence.availability === "unavailable"
+    ? "OpenClaw did not supply this field."
+    : "Not applicable for the current task state.";
+  return (
+    <article className={`task-evidence-card task-evidence-${evidence.availability}`}>
+      <div className="task-evidence-head">
+        <strong>{evidence.label}</strong>
+        <Badge tone={tone}>{evidence.availability}</Badge>
+      </div>
+      <p>{evidence.summary ?? fallback}</p>
+    </article>
+  );
+}
+
+function ContextRow({
+  label,
+  value,
+  valueNode,
+  mono = false,
+  href,
+}: {
+  label: string;
+  value?: string;
+  valueNode?: ReactNode;
+  mono?: boolean;
+  href?: string;
+}) {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd className={mono ? "mono" : undefined}>{valueNode ?? (href && value ? <Link to={href}>{value}</Link> : value)}</dd>
+    </div>
+  );
+}
+
+function TaskSessionReference({
+  sessionKey,
+  sessions,
+  fallbackAgentId,
+}: {
+  sessionKey?: string;
+  sessions: SessionSummary[];
+  fallbackAgentId?: string;
+}) {
+  if (!sessionKey) return <>unavailable</>;
+  const session = sessions.find((candidate) => candidate.key === sessionKey);
+  const parsedAgentId = /^agent:([^:]+):/.exec(sessionKey)?.[1];
+  const agentId = session?.agentId ?? parsedAgentId ?? fallbackAgentId;
+  return agentId ? (
+    <Link to={`/agents/${encodeURIComponent(agentId)}/sessions/${encodeURIComponent(sessionKey)}`}>{sessionKey}</Link>
+  ) : (
+    <>{sessionKey}</>
   );
 }
 

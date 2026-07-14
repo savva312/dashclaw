@@ -69,4 +69,19 @@ test.describe("Discord workflow browser smoke", () => {
     await expect(page.getByText("the runtime now.", { exact: true })).toHaveCount(0);
     await expect(page.getByText("Session tool: read", { exact: true })).toBeVisible();
   });
+
+  test("renders task progress, terminal results, runtime, and lineage without inventing delivery", async ({ page }) => {
+    await page.goto("/tasks/task-work-board");
+    await expect(page.getByRole("heading", { name: "Progress, Result & Failure" })).toBeVisible();
+    await expect(page.getByText("Coordinating fixture implementation and review", { exact: true })).toBeVisible();
+    await expect(page.getByText("flow-work-board", { exact: true })).toBeVisible();
+    await expect(page.getByText("agent:dashclaw:discord:thread:work-board:subagent:model", { exact: true })).toBeVisible();
+
+    await page.goto("/tasks/task-thread-summary");
+    await expect(page.getByText("Completed summary was delivered to Discord.", { exact: true })).toBeVisible();
+    await expect(page.getByText("Result available; delivery unknown", { exact: true })).toBeVisible();
+
+    await page.goto("/tasks/task-lost-background-result");
+    await expect(page.getByText("Terminal result unavailable", { exact: true }).first()).toBeVisible();
+  });
 });

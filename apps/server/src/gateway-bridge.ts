@@ -699,11 +699,11 @@ function normalizeTask(raw: unknown): TaskSummary {
     startedAt: normalizeTimestamp(t.startedAt),
     endedAt: normalizeTimestamp(t.endedAt),
     runtime: normalizeTaskRuntime(t.runtime),
-    progressSummary: pickString(t, "progressSummary"),
-    terminalSummary: pickString(t, "terminalSummary"),
-    error: error.message,
-    errorCode: error.code,
-    errorKind: error.kind,
+    progressSummary: sanitizeTaskText(pickString(t, "progressSummary")),
+    terminalSummary: sanitizeTaskText(pickString(t, "terminalSummary")),
+    error: sanitizeTaskText(error.message),
+    errorCode: sanitizeTaskText(error.code),
+    errorKind: sanitizeTaskText(error.kind),
   };
 }
 
@@ -853,6 +853,12 @@ function normalizeError(value: unknown): { message?: string; code?: string; kind
     code: pickString(error, "code"),
     kind: pickString(error, "kind", "name"),
   };
+}
+
+function sanitizeTaskText(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const sanitized = redactValue(value, 2_000);
+  return typeof sanitized === "string" ? sanitized : undefined;
 }
 
 function hasDefinedValue(value: object): boolean {
