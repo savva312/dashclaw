@@ -141,8 +141,12 @@ export function sessionMatchesQuery(session: SessionSummary, query: string): boo
       session.agentId,
       session.currentTool,
       session.status,
+      session.spawnedCwd,
+      session.spawnedWorkspaceDir,
       session.worktree?.branch,
       session.worktree?.path,
+      session.worktree?.repoRoot,
+      session.worktree?.id,
     ].filter(Boolean).join(" "),
     query,
   );

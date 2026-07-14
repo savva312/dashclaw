@@ -3,7 +3,7 @@ import type { AgentOfficeStats } from "./utils";
 import { AgentAvatar } from "./AgentAvatar";
 import { StatusChip } from "./Chips";
 import { formatRelativeTime } from "./utils";
-import { WorktreeMetadata } from "./WorktreeMetadata";
+import { ExecutionContext } from "./ExecutionContext";
 
 export function AgentCard({ stats }: { stats: AgentOfficeStats }) {
   return (
@@ -28,7 +28,7 @@ export function AgentCard({ stats }: { stats: AgentOfficeStats }) {
             <span className="agent-card-activity-label">Now</span>
             <strong>{stats.currentLabel ?? "Active run"}</strong>
             {stats.currentTool ? <span className="mono agent-card-tool">↳ {stats.currentTool}</span> : null}
-            <WorktreeMetadata worktree={stats.primarySession?.worktree} />
+            {stats.primarySession ? <ExecutionContext session={stats.primarySession} /> : null}
           </div>
         ) : (
           <div className="agent-card-idle-msg">Standing by — no active runs</div>

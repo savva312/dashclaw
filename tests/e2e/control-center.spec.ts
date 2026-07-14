@@ -38,18 +38,27 @@ test.describe("Discord workflow browser smoke", () => {
     await expect(page.getByText(/approve\/deny\/allowlist mutation disabled/).first()).toBeVisible();
   });
 
-  test("shows explicit worktree branch and path on agent and session surfaces", async ({ page }) => {
+  test("separates reported directories from explicit worktree metadata", async ({ page }) => {
     const branch = "agent/task-039-fixture-model-lane";
     const path = "/workspace/.worktrees/task-039-fixture-model-lane";
 
     await page.goto("/agents");
-    await expect(page.getByLabel("Worktree context").filter({ hasText: branch }).first()).toContainText(path);
+    await expect(page.getByLabel("Explicitly reported worktree context").filter({ hasText: branch }).first()).toContainText(path);
 
     await page.goto("/agents/fixture-model");
-    await expect(page.getByLabel("Worktree context").filter({ hasText: branch }).first()).toContainText(path);
+    await expect(page.getByLabel("Reported execution context").filter({ hasText: path }).first()).toContainText("Workspace");
+    await expect(page.getByLabel("Explicitly reported worktree context").filter({ hasText: branch }).first()).toContainText(path);
 
     await page.goto(`/agents/fixture-model/sessions/${encodeURIComponent("agent:dashclaw:discord:thread:work-board:subagent:model")}`);
-    await expect(page.getByLabel("Worktree context").filter({ hasText: branch })).toContainText(path);
+    await expect(page.getByLabel("Reported execution context")).toContainText("Working directory");
+    await expect(page.getByLabel("Explicitly reported worktree context").filter({ hasText: branch })).toContainText(path);
+
+    await page.goto("/agents/dashclaw");
+    const pathOnlyContext = page
+      .getByLabel("Reported execution context")
+      .filter({ hasText: "/workspace/dashclaw-worktrees/deleted-archived-context" });
+    await expect(pathOnlyContext).toContainText("Working directory");
+    await expect(pathOnlyContext).not.toContainText("Worktree (reported)");
   });
 
   test("renders one coherent assistant response while tool activity stays separate", async ({ page }) => {

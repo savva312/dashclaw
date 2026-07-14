@@ -628,7 +628,7 @@ function normalizeSession(raw: unknown): SessionSummary {
   const worktree = rawWorktree
     ? {
         id: pickString(rawWorktree, "id"),
-        path: pickString(rawWorktree, "path") ?? pickString(s, "spawnedCwd"),
+        path: pickString(rawWorktree, "path"),
         branch: pickString(rawWorktree, "branch"),
         repoRoot: pickString(rawWorktree, "repoRoot"),
       }

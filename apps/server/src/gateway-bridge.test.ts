@@ -359,6 +359,7 @@ describe("gateway session normalization", () => {
       spawnedCwd: "/workspace/.worktrees/task-040",
       worktree: {
         id: "task-040",
+        path: "/workspace/.worktrees/task-040",
         branch: "agent/task-040",
         repoRoot: "/workspace/dashclaw",
       },
@@ -390,9 +391,12 @@ describe("gateway session normalization", () => {
 
     const ordinarySession = gatewayBridgeTestUtils.normalizeSession({
       key: "agent:coder:main",
-      spawnedCwd: "/workspace/dashclaw",
+      spawnedCwd: "/workspace/dashclaw-worktrees/looks-like-one",
+      spawnedWorkspaceDir: "/workspace/dashclaw",
     });
     expect(ordinarySession.worktree).toBeUndefined();
+    expect(ordinarySession.spawnedCwd).toBe("/workspace/dashclaw-worktrees/looks-like-one");
+    expect(ordinarySession.spawnedWorkspaceDir).toBe("/workspace/dashclaw");
   });
 
   it("tracks live session activity from session.message events", () => {
