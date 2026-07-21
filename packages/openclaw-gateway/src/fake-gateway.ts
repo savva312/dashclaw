@@ -19,6 +19,7 @@ export interface FakeGatewayHandle {
   emitEvent: (event: string, payload?: unknown) => void;
   emitAssistantSequence: (sessionKey?: string) => void;
   emitStreamContractSequence: (sessionKey?: string) => void;
+  getRequestedScopes: () => string[] | undefined;
 }
 
 type JsonObject = Record<string, unknown>;
@@ -44,6 +45,7 @@ export async function startFakeGateway(options: FakeGatewayOptions = {}): Promis
   const clients = new Set<WebSocket>();
   let seq = 0;
   let assistantSequenceScheduled = false;
+  let requestedScopes: string[] | undefined;
 
   const server: Server = createServer((_req: IncomingMessage, res: ServerResponse) => {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -126,6 +128,9 @@ export async function startFakeGateway(options: FakeGatewayOptions = {}): Promis
           ws.send(JSON.stringify({ type: "res", id: frame.id, ok: false, error: { code: "UNAUTHORIZED", message: "unauthorized" } }));
           return;
         }
+        requestedScopes = Array.isArray(frame.params?.scopes)
+          ? frame.params.scopes.filter((scope): scope is string => typeof scope === "string")
+          : undefined;
         ws.send(
           JSON.stringify({
             type: "res",
@@ -156,7 +161,7 @@ export async function startFakeGateway(options: FakeGatewayOptions = {}): Promis
                 events: ["agent", "health", "sessions.changed", "exec.approval.requested", "exec.approval.resolved"],
               },
               snapshot: { presence: [], health: state.health },
-              auth: { role: "operator", scopes: ["operator.read", "operator.write", "operator.admin"] },
+              auth: { role: "operator", scopes: requestedScopes },
               policy: { maxPayload: 26214400, tickIntervalMs: 15000 },
             },
           }),
@@ -198,6 +203,7 @@ export async function startFakeGateway(options: FakeGatewayOptions = {}): Promis
     emitEvent,
     emitAssistantSequence,
     emitStreamContractSequence,
+    getRequestedScopes: () => requestedScopes,
   };
 }
 

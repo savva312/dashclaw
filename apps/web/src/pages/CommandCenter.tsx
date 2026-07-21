@@ -178,10 +178,10 @@ function ApprovalCockpitMiniCard({ item }: { item: ApprovalCockpitItem }) {
   );
 }
 
-import { formatCompactTitle } from "../lib/format";
+import { humanSessionTitle } from "../lib/format";
 
 function formatItemTitle(title: string): string {
-  return formatCompactTitle(title);
+  return humanSessionTitle(title, undefined);
 }
 
 function ControlCenterOverviewCard({

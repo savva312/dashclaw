@@ -17,17 +17,23 @@
     "dev": "pnpm --parallel --filter @dashclaw/server --filter @dashclaw/web dev",
     "build": "pnpm -r build",
     "start": "pnpm build && pnpm --filter @dashclaw/server start",
+    "pretypecheck": "pnpm --filter @dashclaw/runtime-model build && pnpm --filter @dashclaw/openclaw-gateway build",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test",
-    "lint": "pnpm -r lint",
+    "test": "node --test scripts/playwright-dev-server.test.mjs && pnpm -r test",
+    "test:bundle-security": "pnpm --filter @dashclaw/web test:bundle-security",
+    "lint": "pnpm -r lint && eslint tests scripts playwright.config.ts --max-warnings 0",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui"
   },
   "engines": {
     "node": ">=22"
   },
-  "packageManager": "pnpm@9.15.0",
+  "packageManager": "pnpm@10.34.0+sha512.8736169c56fdb6e26afb5d7e2bd5f4c99cc299620d8bdc288cb354e6dd0936bd4ea62276d1a6b2de4b6e971a00a530e0e08bbeeda63da5d820118d3d7e21ff69",
   "devDependencies": {
-    "@playwright/test": "^1.61.1"
+    "@eslint/js": "9.39.5",
+    "@playwright/test": "^1.61.1",
+    "eslint": "9.39.5",
+    "globals": "16.4.0",
+    "typescript-eslint": "8.65.0"
   }
 }

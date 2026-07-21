@@ -7,6 +7,7 @@ Agent OS runtime cockpit for OpenClaw. Dashclaw connects to a local OpenClaw Gat
 ```bash
 pnpm install
 cp .env.example .env
+chmod 600 .env
 pnpm build
 
 # Terminal 1 — server (reads repo-root .env)
@@ -16,7 +17,7 @@ pnpm --filter @dashclaw/server dev
 pnpm --filter @dashclaw/web dev
 ```
 
-Open http://localhost:5173 in **dev** (Vite + hot reload). If `DASHCLAW_TOKEN` is set in `.env`, set `VITE_DASHCLAW_TOKEN` to the same value to skip the login screen.
+Open http://localhost:5173 in **dev** (Vite + hot reload), then enter the dashboard token printed by the server. If `DASHCLAW_TOKEN` is set in `.env`, enter that value in the login screen. The browser keeps it in `sessionStorage` for the current tab; dashboard tokens must never be configured through a `VITE_*` variable.
 
 ### Production (single port)
 
@@ -65,6 +66,13 @@ ssh openclaw
 
 With the SSH session running, start Dashclaw locally as usual. Traffic to `127.0.0.1:18789` is forwarded to the remote gateway. Set `OPENCLAW_GATEWAY_TOKEN` to the token from the remote host.
 
+Direct connections to non-loopback Gateways must use `wss://`. Plaintext remote
+`ws://` is rejected unless `OPENCLAW_GATEWAY_ALLOW_INSECURE=1` is set. That
+override disables transport confidentiality and should be limited to trusted,
+isolated networks. Credentials embedded in `OPENCLAW_GATEWAY_URL` are always
+rejected; use `OPENCLAW_GATEWAY_TOKEN` or `OPENCLAW_GATEWAY_PASSWORD` instead.
+Loopback `ws://` connections, including the SSH tunnel above, remain supported.
+
 ## Architecture
 
 - `apps/server` — Gateway bridge, SQLite runtime store, SSE API, admin RPC proxy
@@ -96,9 +104,13 @@ Admin-capable Gateway RPCs go through a guarded proxy:
 
 1. **Dashboard auth** — Bearer token (`DASHCLAW_TOKEN`) on all routes except `/api/health`.
 2. **RPC allowlist** — Only `READ_RPC_METHODS` / `WRITE_RPC_METHODS` are permitted.
-3. **High-risk confirmation** — `config.set`, `update.run`, `gateway.restart.request`, `tools.invoke`, etc. require a confirm token from `POST /api/admin/confirm`.
-4. **Audit log** — Mutating RPCs are persisted with actor, method, redacted params, and result summary.
-5. **Redaction** — Tokens, passwords, secrets, and large payloads are redacted before storage or UI display.
+3. **High-risk confirmation** — Execution-capable and configuration RPCs require a short-lived, single-use confirm token from `POST /api/admin/confirm`, bound to the server-issued dashboard session, method, and exact canonical parameters. Confirmation prevents accidental actions; it is not a second authentication factor and provides no protection after the dashboard credential and session are compromised.
+4. **Audit log** — RPCs are persisted with a server-issued `dashboard-session:<uuid>` attribution, method, redacted params, and result summary. Because dashboard auth uses one shared bearer token, this identifies a browser/API session, not a human.
+5. **Safe output boundary** — Authorization and cookie values, credentials, private/cloud/API keys, passwords, secrets, and session tokens are redacted before SQLite persistence, API/SSE output, audit logging, previews, or admin result display. Key matching is case-insensitive and ignores common separators.
+
+Recursive/raw output is bounded to 8 object levels, 50 keys or array items per container, 1,000 total values, and 10,000 characters per string. Allowlisted snapshot collections are separately capped at 200 agents and 500 entries per other collection; session previews are capped at 25 previews with 50 items each. Circular, accessor, exotic, and prototype-mutation inputs are replaced or omitted rather than traversed. Snapshot, timeline, audit, and session-preview outputs use allowlisted shapes; other allowlisted Gateway RPC results use the bounded recursive boundary. Redaction is pattern-based and is not encryption or a substitute for avoiding credentials in operational text.
+
+Set `DASHCLAW_READ_ONLY=1` for an observation-only deployment. In this mode Dashclaw requests only the Gateway `operator.read` scope, does not register admin confirmation or RPC write routes, and rejects write RPCs in the server and Gateway bridge.
 
 Defaults: bind `127.0.0.1` only; gateway token stays server-side. Do not expose Dashclaw on public networks without TLS and stronger auth.
 
@@ -122,15 +134,45 @@ Configuration lives in the **repo root** `.env` file (copy from `.env.example`).
 | `DASHCLAW_BIND` | `127.0.0.1` | Server bind address |
 | `DASHCLAW_TOKEN` | random UUID | Dashboard auth token |
 | `DASHCLAW_DB` | `./data/dashclaw.db` | SQLite database path |
+| `DASHCLAW_READ_ONLY` | — | Set `1` to omit admin write routes and request only Gateway read scope |
 | `OPENCLAW_GATEWAY_URL` | `ws://127.0.0.1:18789` | Gateway WebSocket URL |
 | `OPENCLAW_GATEWAY_TOKEN` | — | Gateway auth token |
+| `OPENCLAW_GATEWAY_ALLOW_INSECURE` | — | Set `1` to explicitly allow remote plaintext `ws://` (unsafe) |
 | `DASHCLAW_FAKE_GATEWAY` | — | Set `1` to use in-process fake gateway |
 | `DASHCLAW_FAKE_GATEWAY_SCENARIO` | `busy` | Fake gateway scenario, including `session-pagination` and `task-contract` contract fixtures |
 | `DASHCLAW_SERVE_WEB` | auto | Set `0` to disable bundled UI in production |
 | `DASHCLAW_WEB_DIST` | `apps/web/dist` | Path to built web assets |
 | `VITE_PORT` | `5173` | Web dev server port |
 | `VITE_DASHCLAW_API_URL` | `http://127.0.0.1:$DASHCLAW_PORT` | API proxy target for web dev |
-| `VITE_DASHCLAW_TOKEN` | — | Auto-fill dashboard token in browser (dev) |
+
+`DASHCLAW_TOKEN` is server-only. Variables prefixed with `VITE_` are public browser configuration and must not contain credentials.
+
+### Local data security
+
+On POSIX systems, Dashclaw creates or corrects the database parent directory to
+mode `0700` and the SQLite database, WAL, and SHM files to mode `0600`. Existing
+database contents are preserved. A custom `DASHCLAW_DB` must therefore use a
+dedicated directory owned by the account running Dashclaw; symbolic-link
+directories/files, non-regular database targets, filesystem roots, and shared
+sticky directories such as `/tmp` are rejected.
+
+Environment files can contain dashboard and Gateway credentials. Keep both
+supported files owner-only:
+
+```bash
+chmod 600 .env .env.local
+```
+
+Database backups contain the same sensitive runtime history. Store each backup
+in an owner-only directory and apply `chmod 600` to copied database and sidecar
+files. Stop Dashclaw before a file-level copy, or use SQLite-compatible backup
+tooling, so the database and sidecars remain consistent. These file permissions
+limit access by other local accounts but do not encrypt the database or its
+backups.
+
+Windows does not enforce POSIX modes. Dashclaw emits a warning and continues
+only for a loopback bind; a non-loopback bind fails closed. Restrict the data
+directory and environment files with Windows ACLs before use.
 
 ## License
 

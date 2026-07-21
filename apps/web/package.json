@@ -8,8 +8,9 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
-    "test": "vitest run",
-    "lint": "echo ok"
+    "test": "vitest run && pnpm run test:bundle-security",
+    "test:bundle-security": "pnpm --filter @dashclaw/runtime-model build && node scripts/assert-secure-browser-bundle.mjs",
+    "lint": "eslint src --max-warnings 0"
   },
   "dependencies": {
     "@dashclaw/runtime-model": "workspace:*",

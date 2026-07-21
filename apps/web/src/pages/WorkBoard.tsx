@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useAppState } from "../context";
 import { buildDashboardModel, taskLedgerCue, type AttentionTone, type DeliveryRecoveryState, type ReviewItem, type WorkBoardColumn, type WorkItem } from "../runtime/dashboard";
-import { formatCompactTitle } from "../lib/format";
+import { humanizeDiscordLabel } from "../lib/format";
 import { sessionOperationalBadges } from "./agents/SessionOperational";
 
 function badgeClassForTone(tone: AttentionTone | "ok") {
@@ -282,11 +282,27 @@ function WorkBoardCard({ item, compact = false }: { item: WorkItem; compact?: bo
     .flatMap(sessionOperationalBadges)
     .filter((signal, index, all) => all.findIndex((candidate) => candidate.label === signal.label) === index)
     .slice(0, 3);
+  const sessionKey = item.evidence.sessions[0]?.key;
+  const titleDisplay = humanizeDiscordLabel(item.title, sessionKey);
+  const sessionDisplay = item.sessionLabel
+    ? humanizeDiscordLabel(item.sessionLabel, sessionKey)
+    : undefined;
 
   return (
     <article className={`work-board-card work-board-card-${badgeClassForTone(item.tone)}${compact ? " work-board-card-compact" : ""}`}>
       <div className="work-board-card-title-row">
-        <strong className="text-clamp-2">{primaryLink ? <Link to={primaryLink} title={item.title}>{formatCompactTitle(item.title)}</Link> : formatCompactTitle(item.title)}</strong>
+        <div className="work-board-card-title-block">
+          <strong className="text-clamp-2">
+            {primaryLink ? (
+              <Link to={primaryLink} title={[item.title, sessionKey].filter(Boolean).join(" · ")}>
+                {titleDisplay.title}
+              </Link>
+            ) : (
+              titleDisplay.title
+            )}
+          </strong>
+          {titleDisplay.detail ? <div className="identity-detail mono text-clip" title={titleDisplay.detail}>{titleDisplay.detail}</div> : null}
+        </div>
         <span className={`badge ${badgeClassForTone(item.tone)}`}>{item.state}</span>
       </div>
       {taskCue ? (
@@ -303,7 +319,14 @@ function WorkBoardCard({ item, compact = false }: { item: WorkItem; compact?: bo
         </div>
         <div>
           <dt>Session</dt>
-          <dd className="mono">{item.links.session ? <Link to={item.links.session}>{item.sessionLabel ?? "session"}</Link> : item.sessionLabel ?? "—"}</dd>
+          <dd>
+            {sessionDisplay ? (
+              <>
+                {item.links.session ? <Link to={item.links.session}>{sessionDisplay.title}</Link> : sessionDisplay.title}
+                {sessionDisplay.detail ? <div className="identity-detail mono text-clip">{sessionDisplay.detail}</div> : null}
+              </>
+            ) : "—"}
+          </dd>
         </div>
         <div>
           <dt>Evidence</dt>

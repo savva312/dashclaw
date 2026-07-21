@@ -1149,6 +1149,33 @@ describe("dashboard selectors", () => {
     expect(orphaned?.lineage.diagnostic).toContain("missing session");
   });
 
+  it("does not expose hostile Gateway permalinks as navigable links", () => {
+    const session = {
+      key: "agent:dashclaw:discord:thread:hostile-link",
+      agentId: "agent-a",
+      label: "thread: hostile link",
+      isActive: true,
+      permalink: "https://discord.com.evil.example/channels/12345678901234567/23456789012345678",
+    };
+
+    const hostile = buildThreadSessionMapModel(snapshot({ sessions: [session] }), [], { nowMs: now });
+    expect(hostile.entries[0]?.source.permalink).toBe(session.permalink);
+    expect(hostile.entries[0]?.links.discord).toBeUndefined();
+
+    const validSession = {
+      ...session,
+      permalink: "https://discord.com/channels/12345678901234567/23456789012345678",
+    };
+    const valid = buildThreadSessionMapModel(
+      snapshot({ sessions: [validSession] }),
+      [],
+      { nowMs: now },
+    );
+    expect(valid.entries[0]?.links.discord).toBe(
+      "https://discord.com/channels/12345678901234567/23456789012345678",
+    );
+  });
+
   it("builds task details from task, session, agent, and related events", () => {
     const events: TimelineEvent[] = [
       {

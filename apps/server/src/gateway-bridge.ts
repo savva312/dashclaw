@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { GatewayClient } from "@dashclaw/openclaw-gateway";
+import { GatewayClient, READ_ONLY_GATEWAY_SCOPES } from "@dashclaw/openclaw-gateway";
 import WebSocket from "ws";
 import type {
   AgentSummary,
@@ -18,14 +18,23 @@ import type {
   TaskSummary,
   TimelineEventKind,
 } from "@dashclaw/runtime-model";
-import { redactValue } from "@dashclaw/runtime-model";
+import {
+  RUNTIME_LIMITS,
+  isWriteRpc,
+  redactValue,
+  safeOutputString,
+  safeOutputValue,
+  safeRuntimeSnapshot,
+} from "@dashclaw/runtime-model";
 import type { RuntimeStore } from "./runtime-store.js";
 
 export interface GatewayBridgeOptions {
   url: string;
   token?: string;
   password?: string;
+  allowInsecureRemote?: boolean;
   gatewayId?: string;
+  readOnly?: boolean;
   store: RuntimeStore;
 }
 
@@ -33,6 +42,7 @@ export class GatewayBridge {
   readonly client: GatewayClient;
   private store: RuntimeStore;
   private gatewayId: string;
+  private readOnly: boolean;
   private connectionState: GatewayConnectionState = "disconnected";
   private snapshot: RuntimeSnapshot;
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -58,13 +68,19 @@ export class GatewayBridge {
   constructor(options: GatewayBridgeOptions) {
     this.store = options.store;
     this.gatewayId = options.gatewayId ?? "default";
+    this.readOnly = options.readOnly ?? false;
     this.snapshot = emptySnapshot(this.gatewayId);
 
     this.client = new GatewayClient({
       url: options.url,
       token: options.token,
       password: options.password,
-      WebSocketImpl: WebSocket as unknown as typeof globalThis.WebSocket,
+      allowInsecureRemote: options.allowInsecureRemote,
+      scopes: this.readOnly ? [...READ_ONLY_GATEWAY_SCOPES] : undefined,
+      webSocketFactory: (url, transportOptions) =>
+        new WebSocket(url, {
+          maxPayload: transportOptions.maxPayload,
+        }) as unknown as globalThis.WebSocket,
     });
 
     this.client.on("connected", (hello) => {
@@ -95,7 +111,7 @@ export class GatewayBridge {
   }
 
   getSnapshot(): RuntimeSnapshot {
-    return this.snapshot;
+    return safeRuntimeSnapshot(this.snapshot);
   }
 
   getConnectionState(): GatewayConnectionState {
@@ -125,6 +141,9 @@ export class GatewayBridge {
   }
 
   async rpc<T = unknown>(method: string, params?: unknown): Promise<T> {
+    if (this.readOnly && isWriteRpc(method)) {
+      throw new Error("Gateway writes are disabled in read-only mode");
+    }
     return this.client.call<T>(method, params);
   }
 
@@ -201,23 +220,36 @@ export class GatewayBridge {
           this.client.call<{ approvals?: unknown[] }>("exec.approval.list").catch(() => ({ approvals: [] })),
         ]);
 
-      const agents = (agentsRes.agents ?? []).map(normalizeAgent);
+      const agents = (agentsRes.agents ?? [])
+        .slice(0, RUNTIME_LIMITS.browser.maxSnapshotItemsPerCollection)
+        .map(normalizeAgent);
       const selectedSessions = this.sessionDiscovery.select(sessionDiscoveryResult);
-      const sessions = this.applyLiveSessions(selectedSessions.sessions);
+      const sessions = this.applyLiveSessions(
+        selectedSessions.sessions.slice(0, RUNTIME_LIMITS.browser.maxSnapshotItemsPerCollection),
+      );
       const sessionDiscoveryStatus: SessionDiscoveryStatus = {
         ...sessionDiscoveryResult.status,
         publishedSessions: sessions.length,
         retainedLastComplete: selectedSessions.retainedLastComplete || undefined,
       };
       const taskMap = new Map<string, TaskSummary>();
-      for (const raw of [...(tasksRes.tasks ?? []), ...(runningTasksRes.tasks ?? [])]) {
+      for (const raw of [...(tasksRes.tasks ?? []), ...(runningTasksRes.tasks ?? [])].slice(
+        0,
+        RUNTIME_LIMITS.browser.maxSnapshotItemsPerCollection,
+      )) {
         const task = normalizeTask(raw);
         taskMap.set(task.id, task);
       }
       const tasks = [...taskMap.values()].sort((a, b) => rankTask(b) - rankTask(a));
-      const cronJobs = (cronRes.jobs ?? []).map(normalizeCron);
-      const nodes = (nodesRes.nodes ?? []).map(normalizeNode);
-      const approvals = (approvalsRes.approvals ?? []).map(normalizeApproval);
+      const cronJobs = (cronRes.jobs ?? [])
+        .slice(0, RUNTIME_LIMITS.browser.maxSnapshotItemsPerCollection)
+        .map(normalizeCron);
+      const nodes = (nodesRes.nodes ?? [])
+        .slice(0, RUNTIME_LIMITS.browser.maxSnapshotItemsPerCollection)
+        .map(normalizeNode);
+      const approvals = (approvalsRes.approvals ?? [])
+        .slice(0, RUNTIME_LIMITS.browser.maxSnapshotItemsPerCollection)
+        .map(normalizeApproval);
 
       const runningTasks = tasks.filter((t) => t.status === "running").length;
       const activeSessions = sessions.filter((s) => s.isActive).length;
@@ -225,7 +257,7 @@ export class GatewayBridge {
       const pendingApprovalCount = approvals.filter((a) => a.status === "pending").length;
       const failedTaskCount = tasks.filter((t) => t.status === "failed" || t.status === "timed_out").length;
 
-      this.snapshot = {
+      this.snapshot = safeRuntimeSnapshot({
         gatewayId: this.gatewayId,
         connectionState: this.connectionState,
         health: health
@@ -248,7 +280,7 @@ export class GatewayBridge {
         failedTaskCount,
         discovery: { sessions: sessionDiscoveryStatus },
         updatedAt: new Date().toISOString(),
-      };
+      });
 
       await this.syncSessionMessageSubscriptions(sessions);
       this.store.saveSnapshot(this.snapshot);
@@ -272,7 +304,8 @@ export class GatewayBridge {
   }
 
   private handleGatewayEvent(name: string, payload: unknown): void {
-    const p = normalizeGatewayEventPayload(name, payload);
+    const safePayload = safeOutputValue(payload);
+    const p = normalizeGatewayEventPayload(name, safePayload);
     const kind = mapEventKind(name, p);
     if (!kind) return;
 
@@ -383,6 +416,7 @@ export class GatewayBridge {
   }
 
   private publishSnapshot(): void {
+    this.snapshot = safeRuntimeSnapshot(this.snapshot);
     this.onSnapshot?.(this.snapshot);
   }
 
@@ -733,6 +767,16 @@ function normalizeApproval(raw: unknown): ApprovalSummary {
     sessionKey: pickString(a, "sessionKey"),
     agentId: pickString(a, "agentId"),
     requestedAt: normalizeTimestamp(pickString(a, "requestedAt", "createdAt")),
+    resolvedAt: normalizeTimestamp(pickString(a, "resolvedAt")),
+    consumedAt: normalizeTimestamp(pickString(a, "consumedAt")),
+    expiresAt: normalizeTimestamp(pickString(a, "expiresAt")),
+    timeoutMs: typeof a.timeoutMs === "number" && Number.isFinite(a.timeoutMs) ? a.timeoutMs : undefined,
+    host: pickString(a, "host"),
+    cwd: pickString(a, "cwd"),
+    scope: pickString(a, "scope"),
+    decision: pickString(a, "decision"),
+    failureReason: pickString(a, "failureReason"),
+    error: pickString(a, "error"),
   };
 }
 
@@ -1004,7 +1048,7 @@ function assistantTimelineTitle(update: AssistantStreamUpdate): string {
 function pickString(obj: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const k of keys) {
     const v = obj[k];
-    if (typeof v === "string" && v.length > 0) return v;
+    if (typeof v === "string" && v.length > 0) return safeOutputString(v);
   }
   return undefined;
 }
@@ -1397,7 +1441,7 @@ function updateLiveSessionFromEvent(
   if (name === "session.message") {
     const status = pickString(payload, "status");
     if (status === "running") {
-      liveSessions.set(sessionKey, {
+      setLiveSession(liveSessions, sessionKey, {
         agentId,
         status: "running",
         updatedAt: now,
@@ -1415,7 +1459,7 @@ function updateLiveSessionFromEvent(
   if (name === "chat") {
     const state = pickString(payload, "state");
     if (state === "started" || state === "delta") {
-      liveSessions.set(sessionKey, {
+      setLiveSession(liveSessions, sessionKey, {
         agentId,
         status: "running",
         updatedAt: now,
@@ -1436,7 +1480,7 @@ function updateLiveSessionFromEvent(
       return liveSessions.delete(sessionKey);
     }
     if (stream === "tool" || stream === "lifecycle") {
-      liveSessions.set(sessionKey, {
+      setLiveSession(liveSessions, sessionKey, {
         agentId,
         status: "running",
         updatedAt: now,
@@ -1448,7 +1492,7 @@ function updateLiveSessionFromEvent(
   }
 
   if (name === "session.tool" || name === "session.operation") {
-    liveSessions.set(sessionKey, {
+    setLiveSession(liveSessions, sessionKey, {
       agentId,
       status: "running",
       updatedAt: now,
@@ -1462,6 +1506,20 @@ function updateLiveSessionFromEvent(
 
 function isLiveSessionTerminalState(state: string): boolean {
   return TERMINAL_SESSION_STATES.has(state.toLowerCase());
+}
+
+function setLiveSession(
+  liveSessions: Map<string, LiveSessionActivity>,
+  sessionKey: string,
+  activity: LiveSessionActivity,
+): void {
+  liveSessions.delete(sessionKey);
+  while (liveSessions.size >= RUNTIME_LIMITS.browser.maxSnapshotItemsPerCollection) {
+    const oldest = liveSessions.keys().next().value as string | undefined;
+    if (!oldest) break;
+    liveSessions.delete(oldest);
+  }
+  liveSessions.set(sessionKey, activity);
 }
 
 function applyLiveSessions(
@@ -1487,7 +1545,12 @@ function applyLiveSessions(
       updatedAt: new Date(live.updatedAt).toISOString(),
     });
   }
-  return [...byKey.values()];
+  const values = [...byKey.values()];
+  if (values.length <= RUNTIME_LIMITS.browser.maxSnapshotItemsPerCollection) return values;
+  return [
+    ...values.filter((session) => session.isActive),
+    ...values.filter((session) => !session.isActive),
+  ].slice(0, RUNTIME_LIMITS.browser.maxSnapshotItemsPerCollection);
 }
 
 export const gatewayBridgeTestUtils = {

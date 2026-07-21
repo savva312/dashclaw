@@ -17,8 +17,7 @@ import { Breadcrumb, EmptyState, SearchField, SegmentedControl } from "../../ui"
 type SessionFilter = "all" | "active" | "recent";
 
 export function AgentSessionsView() {
-  const { agentId: rawAgentId } = useParams();
-  const agentId = rawAgentId ? decodeURIComponent(rawAgentId) : "";
+  const { agentId = "" } = useParams();
   const { snapshot } = useAppState();
   const [filter, setFilter] = useState<SessionFilter>("all");
   const [query, setQuery] = useState("");
@@ -111,6 +110,9 @@ export function AgentSessionsView() {
         >
           <span className="live-banner-label">Live now</span>
           <strong>{stats.currentLabel ?? "Active run in progress"}</strong>
+          {stats.currentDetail ? (
+            <span className="identity-detail mono" title={primarySession.key}>{stats.currentDetail}</span>
+          ) : null}
           {stats.currentTool ? <span className="mono live-banner-tool">{stats.currentTool}</span> : null}
           <ExecutionContext session={primarySession} />
           <span className="live-banner-arrow" aria-hidden>→</span>

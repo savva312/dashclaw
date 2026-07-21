@@ -1,7 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
+import { E2E_DASHCLAW_TOKEN } from "./tests/e2e/auth";
 
 const webPort = Number(process.env.VITE_PORT ?? "5173");
 const baseURL = `http://127.0.0.1:${webPort}`;
+
+process.env.DASHCLAW_E2E_TOKEN = E2E_DASHCLAW_TOKEN;
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -28,5 +31,9 @@ export default defineConfig({
     url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
+    gracefulShutdown: {
+      signal: "SIGTERM",
+      timeout: 3_000,
+    },
   },
 });

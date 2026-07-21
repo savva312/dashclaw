@@ -44,8 +44,7 @@ function eventTone(kind: string): "ok" | "warn" | "error" | "neutral" {
 }
 
 export function TaskDetailPage() {
-  const { taskId: rawTaskId } = useParams();
-  const taskId = rawTaskId ? decodeURIComponent(rawTaskId) : "";
+  const { taskId = "" } = useParams();
   const { snapshot, timeline } = useAppState();
   const detail = useMemo(
     () => (snapshot && taskId ? buildTaskDetailModel(snapshot, timeline, taskId) : null),
