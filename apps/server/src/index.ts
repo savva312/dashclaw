@@ -1,6 +1,6 @@
 import { loadEnv } from "./load-env.js";
 
-loadEnv();
+const WORKSPACE_ROOT = loadEnv();
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -11,7 +11,11 @@ import { AdminService } from "./admin-service.js";
 import { GatewayBridge } from "./gateway-bridge.js";
 import { RuntimeStore } from "./runtime-store.js";
 import { safeOutputString } from "@dashclaw/runtime-model";
-import { isLoopbackBind, resolveDashboardAuth } from "./startup-config.js";
+import {
+  isLoopbackBind,
+  resolveDashboardAuth,
+  resolveWorkspacePath,
+} from "./startup-config.js";
 
 const PORT = Number(process.env.DASHCLAW_PORT ?? "8090");
 const BIND = process.env.DASHCLAW_BIND ?? "127.0.0.1";
@@ -19,11 +23,19 @@ const GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL ?? "ws://127.0.0.1:18789";
 const GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN ?? process.env.OPENCLAW_GATEWAY_PASSWORD;
 const ALLOW_INSECURE_REMOTE_GATEWAY = process.env.OPENCLAW_GATEWAY_ALLOW_INSECURE === "1";
 const DASHBOARD_AUTH = resolveDashboardAuth(process.env.DASHCLAW_TOKEN, BIND);
-const DB_PATH = process.env.DASHCLAW_DB ?? join(process.cwd(), "data", "dashclaw.db");
+const DB_PATH = resolveWorkspacePath(
+  WORKSPACE_ROOT,
+  process.env.DASHCLAW_DB,
+  "data/dashclaw.db",
+);
 const USE_FAKE = process.env.DASHCLAW_FAKE_GATEWAY === "1";
 const READ_ONLY = process.env.DASHCLAW_READ_ONLY === "1";
 const FAKE_GATEWAY_SCENARIO = parseFakeGatewayScenario(process.env.DASHCLAW_FAKE_GATEWAY_SCENARIO);
-const WEB_DIST = process.env.DASHCLAW_WEB_DIST ?? join(process.cwd(), "apps/web/dist");
+const WEB_DIST = resolveWorkspacePath(
+  WORKSPACE_ROOT,
+  process.env.DASHCLAW_WEB_DIST,
+  "apps/web/dist",
+);
 const SERVE_WEB = process.env.DASHCLAW_SERVE_WEB !== "0" && existsSync(join(WEB_DIST, "index.html"));
 
 async function main(): Promise<void> {

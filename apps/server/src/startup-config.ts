@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { isIP } from "node:net";
+import { resolve } from "node:path";
 
 export const MIN_DASHBOARD_TOKEN_LENGTH = 32;
 
@@ -39,4 +40,12 @@ export function isLoopbackBind(value: string): boolean {
   if (ipVersion === 6) return unbracketed === "::1";
   if (ipVersion === 4) return Number(unbracketed.split(".")[0]) === 127;
   return false;
+}
+
+export function resolveWorkspacePath(
+  workspaceRoot: string,
+  configuredPath: string | undefined,
+  defaultPath: string,
+): string {
+  return resolve(workspaceRoot, configuredPath ?? defaultPath);
 }
