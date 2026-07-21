@@ -2,9 +2,23 @@
 
 Agent OS runtime cockpit for OpenClaw. Dashclaw connects to a local OpenClaw Gateway over the official WebSocket protocol and provides real-time observability, persistent timeline history, and guarded admin controls.
 
+Dashclaw v0.1.0 is distributed as source code. It has been tested on Linux and
+macOS with OpenClaw v2026.6.11. Windows is experimental: use loopback binding
+and restrict `.env` and the data directory with Windows ACLs.
+
+## Prerequisites
+
+- Git
+- Node.js 22 or newer
+- Corepack with the repository-pinned pnpm 10.34.0
+- OpenClaw v2026.6.11 for live Gateway integration, or the built-in fake Gateway
+
 ## Quick start
 
 ```bash
+git clone https://github.com/savva312/dashclaw.git
+cd dashclaw
+corepack enable
 pnpm install
 cp .env.example .env
 chmod 600 .env
@@ -21,7 +35,9 @@ Open http://localhost:5173 in **dev** (Vite + hot reload), then enter the dashbo
 
 ### Production (single port)
 
-After building, the server serves the UI from the same port as the API:
+The source release includes no prebuilt binary, container, or service unit.
+After installing dependencies, the server builds and serves the UI from the
+same port as the API:
 
 ```bash
 pnpm start
@@ -29,6 +45,9 @@ pnpm start
 ```
 
 Set `DASHCLAW_SERVE_WEB=0` to run API-only. Override UI path with `DASHCLAW_WEB_DIST`.
+For unattended or non-loopback use, configure a unique `DASHCLAW_TOKEN` of at
+least 32 non-whitespace characters. Non-loopback binding fails closed when no
+token is configured.
 
 ## Live OpenClaw integration
 
@@ -94,7 +113,7 @@ Dashclaw talks to OpenClaw over the **Gateway WebSocket protocol** (not by readi
 
 **Events:** `agent`, `session.message`, `session.operation`, `session.tool`, `sessions.changed`, `cron`, `health`, `presence`, `heartbeat`, `exec.approval.requested`, `exec.approval.resolved`, `shutdown`
 
-Gateway events are not replayed; on sequence gaps Dashclaw refreshes snapshot via RPC. Pin against your installed OpenClaw version and recheck the [Gateway protocol docs](https://docs.openclaw.ai/gateway/protocol) when upgrading.
+Gateway events are not replayed; on sequence gaps Dashclaw refreshes snapshot via RPC. Dashclaw v0.1.0 is tested against OpenClaw v2026.6.11. Other versions may change RPC or event contracts; pin your OpenClaw installation and recheck the [Gateway protocol docs](https://docs.openclaw.ai/gateway/protocol) when upgrading.
 
 Set `DASHCLAW_FAKE_GATEWAY=1` to use an in-process mock Gateway without a live OpenClaw install. Add `DASHCLAW_FAKE_GATEWAY_SCENARIO=idle|busy|failed|approval-heavy|approval-cockpit|degraded|discord-workflow|session-pagination|task-contract` to drive repeatable dashboard states, including multi-page discovery and live-shaped task telemetry.
 
@@ -123,6 +142,8 @@ Defaults: bind `127.0.0.1` only; gateway token stays server-side. Do not expose 
 | `pnpm build` | Build all packages |
 | `pnpm test` | Run unit/integration tests |
 | `pnpm typecheck` | Typecheck all packages |
+| `pnpm lint` | Lint all source and test files |
+| `pnpm test:e2e` | Run the Playwright browser suite |
 
 ## Environment
 
@@ -132,11 +153,12 @@ Configuration lives in the **repo root** `.env` file (copy from `.env.example`).
 |----------|---------|-------------|
 | `DASHCLAW_PORT` | `8090` | Server HTTP port |
 | `DASHCLAW_BIND` | `127.0.0.1` | Server bind address |
-| `DASHCLAW_TOKEN` | random UUID | Dashboard auth token |
+| `DASHCLAW_TOKEN` | random token on loopback | Dashboard auth token; configured values require at least 32 non-whitespace characters and are mandatory for non-loopback binds |
 | `DASHCLAW_DB` | `./data/dashclaw.db` | SQLite database path |
 | `DASHCLAW_READ_ONLY` | — | Set `1` to omit admin write routes and request only Gateway read scope |
 | `OPENCLAW_GATEWAY_URL` | `ws://127.0.0.1:18789` | Gateway WebSocket URL |
 | `OPENCLAW_GATEWAY_TOKEN` | — | Gateway auth token |
+| `OPENCLAW_GATEWAY_PASSWORD` | — | Gateway password fallback used only when `OPENCLAW_GATEWAY_TOKEN` is unset |
 | `OPENCLAW_GATEWAY_ALLOW_INSECURE` | — | Set `1` to explicitly allow remote plaintext `ws://` (unsafe) |
 | `DASHCLAW_FAKE_GATEWAY` | — | Set `1` to use in-process fake gateway |
 | `DASHCLAW_FAKE_GATEWAY_SCENARIO` | `busy` | Fake gateway scenario, including `session-pagination` and `task-contract` contract fixtures |
@@ -174,6 +196,27 @@ Windows does not enforce POSIX modes. Dashclaw emits a warning and continues
 only for a loopback bind; a non-loopback bind fails closed. Restrict the data
 directory and environment files with Windows ACLs before use.
 
+### Upgrading and backing up
+
+Before upgrading, stop Dashclaw and back up `.env` plus the SQLite database and
+its `-wal`/`-shm` sidecars into an owner-only directory. Pull the intended
+release tag, run `pnpm install --frozen-lockfile`, then `pnpm build` and restart.
+Dashclaw prunes runtime history to documented limits; see
+[`docs/runtime-limits.md`](docs/runtime-limits.md). To uninstall, stop Dashclaw
+and remove the checkout. Delete the data directory separately only if its
+timeline and audit history are no longer needed.
+
+## Support and contributing
+
+Use [GitHub Issues](https://github.com/savva312/dashclaw/issues) for reproducible
+bugs and feature requests. Read [SUPPORT.md](SUPPORT.md) for support boundaries,
+[CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes, and [SECURITY.md](SECURITY.md)
+for private vulnerability reporting.
+
 ## License
 
 [MIT](LICENSE)
+
+Dashclaw is an independent project and is not affiliated with or endorsed by
+OpenClaw or Discord. OpenClaw, Discord, and other names are trademarks of their
+respective owners. Clawdeck is Dashclaw's custom design system.

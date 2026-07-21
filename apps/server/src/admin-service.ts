@@ -66,6 +66,9 @@ export class AdminService {
   private readonly dashboardTokenDigest: Buffer;
 
   constructor(private readonly options: AdminServiceOptions) {
+    if (options.dashboardToken.trim().length === 0) {
+      throw new Error("dashboardToken must not be empty");
+    }
     this.onAudit = options.onAudit;
     this.dashboardTokenDigest = hashSecret(options.dashboardToken);
   }

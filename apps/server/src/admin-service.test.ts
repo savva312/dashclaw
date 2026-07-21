@@ -66,6 +66,13 @@ describe("AdminService security", () => {
     expect(admin.validateAuth(undefined)).toBe(false);
   });
 
+  it("rejects an empty dashboard credential", () => {
+    const { bridge, store } = setup();
+    expect(() => new AdminService({ store, bridge, dashboardToken: " " })).toThrow(
+      "dashboardToken must not be empty",
+    );
+  });
+
   it("binds confirmation to principal, method, parameters, and one use", async () => {
     const { admin, bridge } = setup();
     const params = { tool: "shell", input: { command: "date", timeout: 10 } };

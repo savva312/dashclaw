@@ -12,6 +12,11 @@ Security fixes are applied to the latest release on the `main` branch.
 
 `DASHCLAW_TOKEN` is a server-only administrative credential. Enter it through the browser login screen when prompted; never place it in a `VITE_*` variable or otherwise inject it while building browser assets. Vite-prefixed variables are public by design.
 
+Configured dashboard tokens must contain at least 32 non-whitespace characters.
+When Dashclaw binds to loopback without a configured token, it generates a
+strong process-local token and prints it for interactive login. Non-loopback
+binding requires an explicit token and fails closed otherwise.
+
 If a dashboard token may have been used while producing or sharing a browser build made before the SEC-001 fix:
 
 1. Rotate `DASHCLAW_TOKEN` in the deployment's secret store.

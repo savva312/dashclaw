@@ -343,9 +343,18 @@ describe("server runtime limits", () => {
     await expect(response.json()).resolves.toEqual({ error: "Request body too large" });
   });
 
-  it("reports bounded storage health without path details", async () => {
+  it("keeps public health readiness-safe and protects detailed storage health", async () => {
     const app = buildApp();
-    const response = await app.request("/api/health");
+    const publicResponse = await app.request("/api/health");
+    expect(await publicResponse.json()).toEqual({
+      ok: true,
+      degraded: false,
+    });
+
+    const unauthorizedResponse = await app.request("/api/health/storage");
+    expect(unauthorizedResponse.status).toBe(401);
+
+    const response = await app.request("/api/health/storage", { headers: AUTH });
     const body = await response.json() as Record<string, unknown>;
     expect(body).toMatchObject({
       ok: true,

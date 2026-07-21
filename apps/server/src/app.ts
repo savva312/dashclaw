@@ -144,7 +144,14 @@ export function createApp(ctx: AppContext, options: CreateAppOptions = {}): Hono
     await next();
   };
 
-  app.get("/api/health", (c) => c.json({ ok: true, storage: ctx.store.getStorageHealth() }));
+  app.get("/api/health", (c) => {
+    const storage = ctx.store.getStorageHealth();
+    return c.json({ ok: !storage.overHighWater, degraded: storage.overHighWater });
+  });
+
+  app.get("/api/health/storage", requireAuth, (c) =>
+    c.json({ ok: true, storage: ctx.store.getStorageHealth() }),
+  );
 
   app.get("/api/snapshot", requireAuth, (c) => c.json(safeRuntimeSnapshot(ctx.bridge.getSnapshot())));
 

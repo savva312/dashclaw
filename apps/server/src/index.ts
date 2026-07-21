@@ -3,9 +3,7 @@ import { loadEnv } from "./load-env.js";
 loadEnv();
 
 import { existsSync } from "node:fs";
-import { isIP } from "node:net";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
 import type { FakeGatewayScenario } from "@dashclaw/openclaw-gateway";
@@ -13,14 +11,14 @@ import { AdminService } from "./admin-service.js";
 import { GatewayBridge } from "./gateway-bridge.js";
 import { RuntimeStore } from "./runtime-store.js";
 import { safeOutputString } from "@dashclaw/runtime-model";
+import { isLoopbackBind, resolveDashboardAuth } from "./startup-config.js";
 
 const PORT = Number(process.env.DASHCLAW_PORT ?? "8090");
 const BIND = process.env.DASHCLAW_BIND ?? "127.0.0.1";
 const GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL ?? "ws://127.0.0.1:18789";
 const GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN ?? process.env.OPENCLAW_GATEWAY_PASSWORD;
 const ALLOW_INSECURE_REMOTE_GATEWAY = process.env.OPENCLAW_GATEWAY_ALLOW_INSECURE === "1";
-const DASHBOARD_TOKEN = process.env.DASHCLAW_TOKEN ?? randomUUID();
-const DASHBOARD_TOKEN_FROM_ENV = Boolean(process.env.DASHCLAW_TOKEN);
+const DASHBOARD_AUTH = resolveDashboardAuth(process.env.DASHCLAW_TOKEN, BIND);
 const DB_PATH = process.env.DASHCLAW_DB ?? join(process.cwd(), "data", "dashclaw.db");
 const USE_FAKE = process.env.DASHCLAW_FAKE_GATEWAY === "1";
 const READ_ONLY = process.env.DASHCLAW_READ_ONLY === "1";
@@ -58,7 +56,7 @@ async function main(): Promise<void> {
   const admin = new AdminService({
     store,
     bridge,
-    dashboardToken: DASHBOARD_TOKEN,
+    dashboardToken: DASHBOARD_AUTH.token,
     readOnly: READ_ONLY,
   });
 
@@ -69,10 +67,11 @@ async function main(): Promise<void> {
 
   serve({ fetch: app.fetch, port: PORT, hostname: BIND }, (info) => {
     console.log(`[dashclaw] server http://${info.address}:${info.port}`);
-    const tokenLog = DASHBOARD_TOKEN_FROM_ENV
-      ? `${DASHBOARD_TOKEN.slice(0, 8)}...`
-      : DASHBOARD_TOKEN;
-    console.log(`[dashclaw] dashboard token: ${tokenLog}`);
+    if (DASHBOARD_AUTH.source === "generated") {
+      console.log(`[dashclaw] generated loopback dashboard token: ${DASHBOARD_AUTH.token}`);
+    } else {
+      console.log("[dashclaw] dashboard token loaded from environment");
+    }
     console.log(safeOutputString(`[dashclaw] gateway url: ${gatewayUrl}`));
     if (READ_ONLY) console.log("[dashclaw] read-only mode: admin write routes disabled");
     if (SERVE_WEB) console.log(safeOutputString(`[dashclaw] UI bundled at ${WEB_DIST}`));
@@ -113,16 +112,6 @@ function parseFakeGatewayScenario(value: string | undefined): FakeGatewayScenari
   }
   if (value) console.warn(safeOutputString(`[dashclaw] ignoring unknown fake gateway scenario: ${value}`));
   return undefined;
-}
-
-function isLoopbackBind(value: string): boolean {
-  const unbracketed = value.startsWith("[") && value.endsWith("]") ? value.slice(1, -1) : value;
-  if (unbracketed.toLowerCase() === "localhost") return true;
-
-  const ipVersion = isIP(unbracketed);
-  if (ipVersion === 6) return unbracketed === "::1";
-  if (ipVersion === 4) return Number(unbracketed.split(".")[0]) === 127;
-  return false;
 }
 
 void main();

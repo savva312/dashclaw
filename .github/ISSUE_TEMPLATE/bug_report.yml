@@ -1,0 +1,52 @@
+name: Bug report
+description: Report a reproducible Dashclaw problem
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, private runtime data, or security vulnerabilities. Report vulnerabilities through SECURITY.md.
+  - type: input
+    id: dashclaw-version
+    attributes:
+      label: Dashclaw version
+      description: Release tag or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: openclaw-version
+    attributes:
+      label: OpenClaw version
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system and Node.js version
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted diagnostics
+      description: Remove all credentials, session content, paths, and private data before posting.
