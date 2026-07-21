@@ -1,8 +1,10 @@
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   MIN_DASHBOARD_TOKEN_LENGTH,
   isLoopbackBind,
   resolveDashboardAuth,
+  resolveWorkspacePath,
 } from "./startup-config.js";
 
 describe("dashboard startup authentication", () => {
@@ -45,4 +47,17 @@ describe("dashboard startup authentication", () => {
     "rejects non-loopback bind %s",
     (bind) => expect(isLoopbackBind(bind)).toBe(false),
   );
+
+  it("resolves default and configured runtime paths from the workspace root", () => {
+    const root = resolve("test-workspace");
+    expect(resolveWorkspacePath(root, undefined, "apps/web/dist")).toBe(
+      resolve(root, "apps/web/dist"),
+    );
+    expect(resolveWorkspacePath(root, "./runtime/dashclaw.db", "data/dashclaw.db")).toBe(
+      resolve(root, "runtime/dashclaw.db"),
+    );
+
+    const absolute = resolve(root, "external/runtime.db");
+    expect(resolveWorkspacePath(root, absolute, "data/dashclaw.db")).toBe(absolute);
+  });
 });

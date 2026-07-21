@@ -2,6 +2,17 @@
 
 Agent OS runtime cockpit for OpenClaw. Dashclaw connects to a local OpenClaw Gateway over the official WebSocket protocol and provides real-time observability, persistent timeline history, and guarded admin controls.
 
+![Dashclaw Command Center](docs/images/dashclaw-command-center.png)
+
+## Why Dashclaw?
+
+- **See what is happening now** — connect agents, sessions, tasks, approvals,
+  failures, and recent events in one operational view.
+- **Find work that needs intervention** — surface blocked, failed, stale, and
+  approval-bound activity without joining raw Gateway data by hand.
+- **Act with guardrails** — inspect runtime history and use allowlisted admin
+  operations with confirmation, audit logging, redaction, and read-only mode.
+
 Dashclaw v0.1.0 is distributed as source code. It has been tested on Linux and
 macOS with OpenClaw v2026.6.11. Windows is experimental: use loopback binding
 and restrict `.env` and the data directory with Windows ACLs.
@@ -212,6 +223,14 @@ Use [GitHub Issues](https://github.com/savva312/dashclaw/issues) for reproducibl
 bugs and feature requests. Read [SUPPORT.md](SUPPORT.md) for support boundaries,
 [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes, and [SECURITY.md](SECURITY.md)
 for private vulnerability reporting.
+
+## Feedback
+
+Running Dashclaw with a real OpenClaw workflow? Share your setup experience,
+the first confusing screen, missing operational signals, and anything you would
+use weekly in the [v0.1 feedback discussion](https://github.com/savva312/dashclaw/discussions/16).
+Include your Dashclaw version, OpenClaw version, and operating system, but never
+post credentials, private session output, environment files, or database data.
 
 ## License
 
