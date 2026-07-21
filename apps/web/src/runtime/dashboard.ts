@@ -7,6 +7,12 @@ import type {
   TaskSummary,
   TimelineEvent,
 } from "@dashclaw/runtime-model";
+import {
+  channelNameFromDiscordLabel,
+  humanSessionTitle,
+  threadNameFromDiscordLabel,
+} from "../lib/format";
+import { safeDiscordPermalink } from "../lib/discord";
 
 export type AttentionTone = "error" | "warn" | "info";
 export type AttentionCategory = "intervention" | "access" | "security";
@@ -1158,7 +1164,7 @@ function threadSessionMapEntryForSession(
         taskId: primaryTask?.id,
         approvalId: primaryApproval?.status === "pending" ? primaryApproval.id : undefined,
       }),
-      discord: source.permalink,
+      discord: safeDiscordPermalink(source.permalink),
     },
   };
 }
@@ -2380,7 +2386,7 @@ export function buildWorkGraphModel(
 
     nodes.set(`session:${session.key}`, {
       id: `session:${session.key}`,
-      label: session.label ?? shortSessionKey(session.key),
+      label: humanSessionTitle(session.label, session.key),
       kind: "session",
       role,
       status: workStatusForSession(session, nowMs, activeSessionStaleAfterMs),
@@ -2768,7 +2774,7 @@ function buildActiveWork(
 
       return {
         id: `session:${session.key}`,
-        label: session.label ?? shortSessionKey(session.key),
+        label: humanSessionTitle(session.label, session.key),
         status: "active-session",
         agent,
         session,
@@ -2992,7 +2998,7 @@ function buildAttentionItems(
       kind: "stale-active-session",
       category: "intervention",
       tone: "warn",
-      title: session.label ?? shortSessionKey(session.key),
+      title: humanSessionTitle(session.label, session.key),
       summary: `Active session has no update for ${formatAge(updatedAt, context.nowMs)}.`,
       agent: session.agentId ? context.agentsById.get(session.agentId) : undefined,
       session,
@@ -3101,15 +3107,21 @@ function sourceForSession(session: SessionSummary, metadataGaps: Set<string>): T
     );
   }
 
+  const channelName = rawChannelName ?? channelNameFromDiscordLabel(session.label);
+  const threadName =
+    rawThreadName
+    ?? threadNameFromDiscordLabel(session.label)
+    ?? (kind === "thread" ? stripThreadLabel(session.label) ?? (!isOpaqueDiscordId(keySource.threadId) ? keySource.threadId : undefined) : undefined);
+
   return {
     kind,
     key: session.key,
-    label: sourceLabelForSession(session, kind, rawChannelName, rawThreadName),
+    label: sourceLabelForSession(session, kind, channelName, threadName),
     platform: rawPlatform ?? (kind === "channel" || kind === "thread" ? "discord" : undefined),
     channelId: rawChannelId ?? keySource.channelId,
-    channelName: rawChannelName,
+    channelName,
     threadId: rawThreadId ?? keySource.threadId,
-    threadName: rawThreadName ?? (kind === "thread" ? stripThreadLabel(session.label) ?? keySource.threadId : undefined),
+    threadName,
     permalink,
     archived,
     metadataSource,
@@ -3141,10 +3153,10 @@ function sourceLabelForSession(
   channelName?: string,
   threadName?: string,
 ): string {
-  if (kind === "channel" && channelName) return `#${channelName}`;
+  if (kind === "channel" && channelName) return channelName.startsWith("#") ? channelName : `#${channelName}`;
   if (kind === "thread" && threadName) return threadName;
-  if (kind === "thread") return stripThreadLabel(session.label) ?? shortSessionKey(session.key);
-  return session.label ?? shortSessionKey(session.key);
+  if (kind === "thread" && channelName) return channelName.startsWith("#") ? channelName : `#${channelName}`;
+  return humanSessionTitle(session.label, session.key);
 }
 
 function stripThreadLabel(label: string | undefined): string | undefined {
@@ -3324,13 +3336,13 @@ function titleForWorkItem(input: {
   approvals: ApprovalSummary[];
   events: TimelineEvent[];
 }): string {
-  const label = input.rootSession?.label ?? input.sessions[0]?.label;
-  if (label) return label.replace(/^thread:\s*/i, "");
+  const root = input.rootSession ?? input.sessions[0];
+  if (root) return humanSessionTitle(root.label, root.key);
   const task = primaryTaskForWorkItem(input.tasks);
   if (task?.title) return task.title;
   const approval = input.approvals[0];
   if (approval) return approval.kind === "exec" ? "Execution approval" : "Plugin approval";
-  return input.events[0]?.title ?? input.rootSession?.key ?? "Untitled work item";
+  return input.events[0]?.title ?? "Untitled work item";
 }
 
 function summaryForWorkItem(input: {
@@ -3847,7 +3859,12 @@ function labelForAgent(agent: AgentSummary | undefined): string | undefined {
 }
 
 function labelForSession(session: SessionSummary | undefined): string | undefined {
-  return session ? session.label ?? shortSessionKey(session.key) : undefined;
+  return session ? humanSessionTitle(session.label, session.key) : undefined;
+}
+
+function isOpaqueDiscordId(value?: string): boolean {
+  if (!value) return false;
+  return /^\d{16,22}$/.test(value) || /^g-\d+$/.test(value);
 }
 
 function mapBy<T>(items: T[], key: (item: T) => string): Map<string, T> {

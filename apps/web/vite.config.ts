@@ -14,7 +14,7 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     envDir: repoRoot,
-    envPrefix: ["VITE_", "DASHCLAW_"],
+    envPrefix: ["VITE_"],
     server: {
       host: "127.0.0.1",
       port: webPort,

@@ -1,5 +1,13 @@
 import { randomUUID } from "node:crypto";
-import type { GatewayClientEvents, GatewayClientOptions, GatewayFrame, HelloOkPayload } from "./types.js";
+import { RUNTIME_LIMITS } from "@dashclaw/runtime-model";
+import { parseGatewayFrame, serializeGatewayFrame } from "./frame-limits.js";
+import type {
+  GatewayClientEvents,
+  GatewayClientOptions,
+  GatewayFrame,
+  GatewayHandshakeState,
+  HelloOkPayload,
+} from "./types.js";
 
 type WsLike = {
   readyState: number;
@@ -12,35 +20,115 @@ type WsLike = {
 };
 
 const WS_OPEN = 1;
+const POLICY_VIOLATION = 1008;
 
-function parseFrame(raw: string): GatewayFrame | null {
+export const DEFAULT_GATEWAY_SCOPES = [
+  "operator.read",
+  "operator.write",
+  "operator.admin",
+  "operator.approvals",
+  "operator.pairing",
+] as const;
+
+export const READ_ONLY_GATEWAY_SCOPES = ["operator.read"] as const;
+
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (host === "localhost" || host.endsWith(".localhost") || host === "::1") return true;
+  if (/^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(host)) return true;
+  const octets = host.split(".");
+  return octets.length === 4 && octets.every((octet) => /^\d{1,3}$/.test(octet)) && Number(octets[0]) === 127;
+}
+
+function validateGatewayUrl(rawUrl: string, allowInsecureRemote: boolean): void {
+  let url: URL;
   try {
-    return JSON.parse(raw) as GatewayFrame;
+    url = new URL(rawUrl);
   } catch {
-    return null;
+    throw new Error("Invalid Gateway URL");
   }
+
+  if (url.username || url.password) {
+    throw new Error("Gateway URL must not contain credentials");
+  }
+  if (url.protocol !== "ws:" && url.protocol !== "wss:") {
+    throw new Error("Gateway URL must use ws:// or wss://");
+  }
+  if (url.protocol === "ws:" && !isLoopbackHost(url.hostname) && !allowInsecureRemote) {
+    throw new Error(
+      "Remote Gateway URL must use wss:// (set OPENCLAW_GATEWAY_ALLOW_INSECURE=1 only for trusted networks)",
+    );
+  }
+}
+
+function isValidChallenge(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const challenge = payload as Record<string, unknown>;
+  return typeof challenge.nonce === "string" && challenge.nonce.length > 0 && Number.isFinite(challenge.ts);
+}
+
+function isHelloOk(payload: unknown): payload is HelloOkPayload {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const hello = payload as Partial<HelloOkPayload>;
+  return (
+    hello.type === "hello-ok" &&
+    typeof hello.protocol === "number" &&
+    Boolean(hello.server) &&
+    typeof hello.server === "object"
+  );
+}
+
+interface PendingCall {
+  generation: number;
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface PendingHandshake {
+  generation: number;
+  requestId: string;
+  timer: ReturnType<typeof setTimeout>;
+  reject: (error: Error) => void;
 }
 
 export class GatewayClient {
   private ws: WsLike | null = null;
-  private pending = new Map<
-    string,
-    { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }
-  >();
+  private pending = new Map<string, PendingCall>();
+  private handshake: PendingHandshake | null = null;
   private listeners: Partial<{ [K in keyof GatewayClientEvents]: GatewayClientEvents[K][] }> = {};
-  private connected = false;
+  private state: GatewayHandshakeState = "disconnected";
   private intentionalClose = false;
   private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private generation = 0;
   private lastSeq: number | undefined;
   private hello: HelloOkPayload | null = null;
-  private readonly WebSocketImpl: typeof WebSocket;
+  private eventWindowStartedAt = Date.now();
+  private eventCount = 0;
+  private eventLimitReported = false;
+  private lastFrameRejectionReportedAt = 0;
+  private readonly createWebSocket: (url: string) => WsLike;
 
   constructor(private readonly options: GatewayClientOptions) {
-    this.WebSocketImpl = options.WebSocketImpl ?? WebSocket;
+    validateGatewayUrl(options.url, options.allowInsecureRemote === true);
+    if (options.webSocketFactory) {
+      this.createWebSocket = (url) =>
+        options.webSocketFactory!(url, {
+          maxPayload: RUNTIME_LIMITS.gateway.maxFrameBytes,
+        }) as unknown as WsLike;
+    } else {
+      const WebSocketImpl = options.WebSocketImpl ?? WebSocket;
+      this.createWebSocket = (url) => new WebSocketImpl(url) as unknown as WsLike;
+    }
   }
 
   get isConnected(): boolean {
-    return this.connected;
+    return this.state === "authenticated";
+  }
+
+  get handshakeState(): GatewayHandshakeState {
+    return this.state;
   }
 
   get helloOk(): HelloOkPayload | null {
@@ -70,128 +158,210 @@ export class GatewayClient {
   }
 
   async connect(): Promise<HelloOkPayload> {
+    if (this.state !== "disconnected") {
+      throw new Error("Gateway connection already active");
+    }
+    this.clearReconnectTimer();
     this.intentionalClose = false;
     return this.openSocket();
   }
 
   disconnect(): void {
     this.intentionalClose = true;
-    this.ws?.close(1000, "client disconnect");
+    this.clearReconnectTimer();
+    const ws = this.ws;
+    const generation = this.generation;
+    if (ws) {
+      this.state = "closing";
+      ws.close(1000, "client disconnect");
+    }
     this.ws = null;
-    this.connected = false;
-    this.rejectAllPending(new Error("Gateway disconnected"));
+    this.generation += 1;
+    this.state = "disconnected";
+    this.hello = null;
+    this.lastSeq = undefined;
+    this.rejectGeneration(generation, new Error("Gateway disconnected"));
   }
 
   async call<T = unknown>(method: string, params?: unknown, timeoutMs?: number): Promise<T> {
-    if (!this.ws || this.ws.readyState !== WS_OPEN) {
+    const ws = this.ws;
+    const generation = this.generation;
+    if (!ws || ws.readyState !== WS_OPEN || this.state !== "authenticated") {
       throw new Error("Gateway not connected");
     }
-    if (!this.connected && method !== "connect") {
-      throw new Error("Gateway not connected");
+    if (this.pending.size >= RUNTIME_LIMITS.gateway.maxPendingRequests) {
+      throw new Error("Gateway request backlog limit reached");
     }
     const id = randomUUID();
     const frame: GatewayFrame = { type: "req", id, method, params };
+    const serialized = serializeGatewayFrame(frame);
     const timeout = timeoutMs ?? this.options.requestTimeoutMs ?? 30_000;
 
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
+        const pending = this.pending.get(id);
+        if (!pending || pending.generation !== generation) return;
         this.pending.delete(id);
         reject(new Error(`RPC timeout: ${method}`));
       }, timeout);
 
       this.pending.set(id, {
-        resolve: (v) => resolve(v as T),
+        generation,
+        resolve: (value) => resolve(value as T),
         reject,
         timer,
       });
 
-      this.ws!.send(JSON.stringify(frame));
+      try {
+        ws.send(serialized);
+      } catch {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(new Error(`Gateway RPC send failed: ${method}`));
+      }
     });
   }
 
   private async openSocket(): Promise<HelloOkPayload> {
+    const generation = ++this.generation;
+    this.state = "connecting";
+    this.hello = null;
+    this.lastSeq = undefined;
+
     return new Promise((resolve, reject) => {
-      const ws = new this.WebSocketImpl(this.options.url) as unknown as WsLike;
+      let ws: WsLike;
+      try {
+        ws = this.createWebSocket(this.options.url);
+      } catch {
+        this.state = "disconnected";
+        reject(new Error("Failed to create Gateway WebSocket"));
+        return;
+      }
       this.ws = ws;
       let settled = false;
 
+      const resolveConnect = (hello: HelloOkPayload) => {
+        if (settled) return;
+        settled = true;
+        resolve(hello);
+      };
+      const rejectConnect = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+
       ws.onopen = () => {
-        this.reconnectAttempt = 0;
+        if (!this.isCurrent(ws, generation)) return;
       };
 
       ws.onmessage = (ev) => {
+        if (!this.isCurrent(ws, generation)) return;
         const raw = typeof ev.data === "string" ? ev.data : String(ev.data);
-        const frame = parseFrame(raw);
-        if (!frame) return;
-
-        if (frame.type === "event") {
-          if (frame.event === "connect.challenge") {
-            void this.performHandshake().then(
-              (hello) => {
-                if (!settled) {
-                  settled = true;
-                  resolve(hello);
-                }
-              },
-              (err) => {
-                if (!settled) {
-                  settled = true;
-                  reject(err instanceof Error ? err : new Error(String(err)));
-                }
-              },
-            );
-            return;
+        let frame: GatewayFrame;
+        try {
+          frame = parseGatewayFrame(raw);
+        } catch (err) {
+          this.reportFrameRejection(err);
+          if (this.state !== "authenticated") {
+            this.failPreAuth(ws, generation, rejectConnect, "Invalid frame before authentication");
           }
-
-          if (frame.seq !== undefined) {
-            if (this.lastSeq !== undefined && frame.seq > this.lastSeq + 1) {
-              this.emit("error", new Error(`Event sequence gap: expected ${this.lastSeq + 1}, got ${frame.seq}`));
-            }
-            this.lastSeq = frame.seq;
-          }
-
-          this.emit("event", frame.event, frame.payload, { seq: frame.seq });
           return;
         }
 
-        if (frame.type === "res") {
-          const pending = this.pending.get(frame.id);
-          if (!pending) return;
-          clearTimeout(pending.timer);
-          this.pending.delete(frame.id);
-          if (frame.ok) {
-            pending.resolve(frame.payload);
-          } else {
-            const msg = frame.error?.message ?? frame.error?.code ?? "RPC failed";
-            pending.reject(new Error(msg));
-          }
+        if (this.state !== "authenticated") {
+          this.handlePreAuthFrame(frame, ws, generation, resolveConnect, rejectConnect);
+          return;
         }
+
+        this.handleAuthenticatedFrame(frame, ws, generation);
       };
 
       ws.onclose = (ev) => {
-        this.connected = false;
+        if (!this.isCurrent(ws, generation)) return;
+        this.ws = null;
+        this.state = "disconnected";
         this.hello = null;
-        this.rejectAllPending(new Error("Gateway connection closed"));
-        const reason = ev.reason || `code ${ev.code ?? "unknown"}`;
+        this.lastSeq = undefined;
+        this.rejectGeneration(generation, new Error("Gateway connection closed"));
+        rejectConnect(new Error("Gateway connection closed before authentication"));
+        const reason = `code ${ev.code ?? "unknown"}`;
         this.emit("disconnected", reason);
 
         if (!this.intentionalClose && this.options.reconnect !== false) {
-          this.scheduleReconnect();
+          this.scheduleReconnect(generation);
         }
       };
 
       ws.onerror = () => {
+        if (!this.isCurrent(ws, generation)) return;
         const err = new Error("Gateway WebSocket error");
-        this.emit("error", err);
-        if (!settled) {
-          settled = true;
-          reject(err);
+        if (this.state !== "authenticated") {
+          this.failPreAuth(ws, generation, rejectConnect, err.message);
+          return;
         }
+        this.emit("error", err);
       };
     });
   }
 
-  private async performHandshake(): Promise<HelloOkPayload> {
+  private handlePreAuthFrame(
+    frame: GatewayFrame,
+    ws: WsLike,
+    generation: number,
+    resolveConnect: (hello: HelloOkPayload) => void,
+    rejectConnect: (error: Error) => void,
+  ): void {
+    if (this.state === "connecting") {
+      if (frame.type !== "event" || frame.event !== "connect.challenge" || !isValidChallenge(frame.payload)) {
+        this.failPreAuth(ws, generation, rejectConnect, "Expected a valid Gateway challenge");
+        return;
+      }
+      this.state = "challenged";
+      this.sendHandshake(ws, generation, rejectConnect);
+      return;
+    }
+
+    if (this.state === "challenged") {
+      const handshake = this.handshake;
+      if (
+        frame.type !== "res" ||
+        !handshake ||
+        handshake.generation !== generation ||
+        frame.id !== handshake.requestId
+      ) {
+        this.failPreAuth(ws, generation, rejectConnect, "Unexpected frame during Gateway authentication");
+        return;
+      }
+
+      clearTimeout(handshake.timer);
+      this.handshake = null;
+      if (!frame.ok) {
+        this.failPreAuth(ws, generation, rejectConnect, "Gateway authentication failed");
+        return;
+      }
+      if (!isHelloOk(frame.payload)) {
+        this.failPreAuth(ws, generation, rejectConnect, "Invalid Gateway authentication response");
+        return;
+      }
+
+      this.state = "authenticated";
+      this.reconnectAttempt = 0;
+      this.hello = frame.payload;
+      this.lastSeq = undefined;
+      this.emit("connected", frame.payload);
+      resolveConnect(frame.payload);
+      return;
+    }
+
+    this.failPreAuth(ws, generation, rejectConnect, "Unexpected Gateway handshake state");
+  }
+
+  private sendHandshake(
+    ws: WsLike,
+    generation: number,
+    rejectConnect: (error: Error) => void,
+  ): void {
     const params: Record<string, unknown> = {
       minProtocol: 4,
       maxProtocol: 4,
@@ -203,13 +373,7 @@ export class GatewayClient {
         mode: this.options.clientMode ?? "backend",
       },
       role: "operator",
-      scopes: this.options.scopes ?? [
-        "operator.read",
-        "operator.write",
-        "operator.admin",
-        "operator.approvals",
-        "operator.pairing",
-      ],
+      scopes: this.options.scopes ?? [...DEFAULT_GATEWAY_SCOPES],
       caps: ["tool-events"],
       locale: "en-US",
       userAgent: "dashclaw/0.1.0",
@@ -221,36 +385,165 @@ export class GatewayClient {
       params.auth = { password: this.options.password };
     }
 
-    const payload = await this.call<HelloOkPayload>("connect", params, 15_000);
-    if (payload?.type !== "hello-ok") {
-      throw new Error("Invalid connect response");
+    const requestId = randomUUID();
+    const timer = setTimeout(() => {
+      const handshake = this.handshake;
+      if (
+        !handshake ||
+        handshake.generation !== generation ||
+        handshake.requestId !== requestId ||
+        !this.isCurrent(ws, generation)
+      ) {
+        return;
+      }
+      this.handshake = null;
+      this.failPreAuth(ws, generation, rejectConnect, "Gateway authentication timed out");
+    }, 15_000);
+
+    this.handshake = { generation, requestId, timer, reject: rejectConnect };
+    try {
+      ws.send(
+        serializeGatewayFrame({
+          type: "req",
+          id: requestId,
+          method: "connect",
+          params,
+        }),
+      );
+    } catch {
+      clearTimeout(timer);
+      this.handshake = null;
+      this.failPreAuth(ws, generation, rejectConnect, "Failed to send Gateway authentication request");
     }
-    this.connected = true;
-    this.hello = payload;
-    this.emit("connected", payload);
-    return payload;
   }
 
-  private scheduleReconnect(): void {
+  private handleAuthenticatedFrame(frame: GatewayFrame, ws: WsLike, generation: number): void {
+    if (frame.type === "event") {
+      if (frame.event === "connect.challenge") {
+        this.emit("error", new Error("Duplicate Gateway challenge after authentication"));
+        this.closeGeneration(ws, generation, POLICY_VIOLATION, "protocol violation");
+        return;
+      }
+
+      if (!this.acceptGatewayEvent()) return;
+
+      if (frame.seq !== undefined) {
+        if (this.lastSeq !== undefined && frame.seq > this.lastSeq + 1) {
+          this.emit("error", new Error(`Event sequence gap: expected ${this.lastSeq + 1}, got ${frame.seq}`));
+        }
+        this.lastSeq = frame.seq;
+      }
+
+      this.emit("event", frame.event, frame.payload, { seq: frame.seq });
+      return;
+    }
+
+    if (frame.type === "res") {
+      const pending = this.pending.get(frame.id);
+      if (!pending || pending.generation !== generation) return;
+      clearTimeout(pending.timer);
+      this.pending.delete(frame.id);
+      if (frame.ok) {
+        pending.resolve(frame.payload);
+      } else {
+        const message = frame.error?.message ?? frame.error?.code ?? "RPC failed";
+        pending.reject(new Error(message));
+      }
+      return;
+    }
+
+    this.emit("error", new Error("Unexpected Gateway request frame"));
+    this.closeGeneration(ws, generation, POLICY_VIOLATION, "protocol violation");
+  }
+
+  private failPreAuth(
+    ws: WsLike,
+    generation: number,
+    rejectConnect: (error: Error) => void,
+    message: string,
+  ): void {
+    const error = new Error(message);
+    rejectConnect(error);
+    this.emit("error", error);
+    this.closeGeneration(ws, generation, POLICY_VIOLATION, "authentication failed");
+  }
+
+  private closeGeneration(ws: WsLike, generation: number, code: number, reason: string): void {
+    if (!this.isCurrent(ws, generation)) return;
+    this.state = "closing";
+    this.rejectGeneration(generation, new Error("Gateway connection closed"));
+    ws.close(code, reason);
+  }
+
+  private scheduleReconnect(closedGeneration: number): void {
+    this.clearReconnectTimer();
     const base = this.options.reconnectDelayMs ?? 1000;
     const max = this.options.maxReconnectDelayMs ?? 30_000;
     const delay = Math.min(base * 2 ** this.reconnectAttempt, max);
     this.reconnectAttempt += 1;
-    setTimeout(() => {
-      if (!this.intentionalClose) {
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (
+        !this.intentionalClose &&
+        this.generation === closedGeneration &&
+        this.state === "disconnected"
+      ) {
         void this.openSocket().catch((err) => this.emit("error", err instanceof Error ? err : new Error(String(err))));
       }
     }, delay);
   }
 
-  private rejectAllPending(err: Error): void {
-    for (const [, p] of this.pending) {
-      clearTimeout(p.timer);
-      p.reject(err);
+  private clearReconnectTimer(): void {
+    if (!this.reconnectTimer) return;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+  }
+
+  private rejectGeneration(generation: number, error: Error): void {
+    for (const [id, pending] of this.pending) {
+      if (pending.generation !== generation) continue;
+      clearTimeout(pending.timer);
+      pending.reject(error);
+      this.pending.delete(id);
     }
-    this.pending.clear();
+    if (this.handshake?.generation === generation) {
+      clearTimeout(this.handshake.timer);
+      this.handshake.reject(error);
+      this.handshake = null;
+    }
+  }
+
+  private isCurrent(ws: WsLike, generation: number): boolean {
+    return this.ws === ws && this.generation === generation;
+  }
+
+  private acceptGatewayEvent(): boolean {
+    const now = Date.now();
+    if (now - this.eventWindowStartedAt >= 1_000) {
+      this.eventWindowStartedAt = now;
+      this.eventCount = 0;
+      this.eventLimitReported = false;
+    }
+    this.eventCount += 1;
+    if (this.eventCount <= RUNTIME_LIMITS.gateway.maxEventsPerSecond) return true;
+    if (!this.eventLimitReported) {
+      this.eventLimitReported = true;
+      this.emit("error", new Error("Gateway event rate exceeded; excess events dropped"));
+    }
+    return false;
+  }
+
+  private reportFrameRejection(err: unknown): void {
+    const now = Date.now();
+    if (now - this.lastFrameRejectionReportedAt < 1_000) return;
+    this.lastFrameRejectionReportedAt = now;
+    this.emit(
+      "error",
+      err instanceof Error ? err : new Error("Gateway frame rejected"),
+    );
   }
 }
 
 export * from "./types.js";
 export * from "./fake-gateway.js";
+export * from "./frame-limits.js";

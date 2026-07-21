@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import type { SessionSummary, TaskSummary } from "@dashclaw/runtime-model";
 import { useAppState } from "../context";
 import { buildDashboardModel, linksFor, type AttentionTone, type ThreadSessionMapEntry } from "../runtime/dashboard";
-import { formatCompactTitle } from "../lib/format";
+import { discordDetail, humanizeDiscordLabel, humanSessionTitle } from "../lib/format";
 
 function badgeClassForTone(tone: AttentionTone | "ok") {
   if (tone === "ok") return "ok";
@@ -138,6 +138,9 @@ function MapStat({ label, value, tone = "neutral" }: { label: string; value: num
 function ThreadMapCard({ entry }: { entry: ThreadSessionMapEntry }) {
   const primaryLink = entry.links.session ?? entry.links.task ?? entry.links.agent ?? "/work";
   const diagnostics = [entry.lineage.diagnostic].filter((value): value is string => Boolean(value));
+  const titleDisplay = humanizeDiscordLabel(entry.source.label, entry.source.key);
+  const idDetail = discordDetail(entry.source.label, entry.source.key);
+  const invalidDiscordPermalink = Boolean(entry.source.permalink && !entry.links.discord);
 
   return (
     <article className={`thread-map-card thread-map-card-${badgeClassForTone(entry.tone)}`}>
@@ -145,9 +148,14 @@ function ThreadMapCard({ entry }: { entry: ThreadSessionMapEntry }) {
         <div>
           <div className="thread-map-title-row">
             <span className="badge neutral">{entry.source.kind}</span>
-            <strong><Link to={primaryLink} title={entry.source.label}>{formatCompactTitle(entry.source.label, 56)}</Link></strong>
+            <strong>
+              <Link to={primaryLink} title={[entry.source.label, entry.source.key].filter(Boolean).join(" · ")}>
+                {titleDisplay.title}
+              </Link>
+            </strong>
           </div>
           <p className="thread-map-source-line">{sourceLine(entry)}</p>
+          {idDetail ? <p className="identity-detail mono text-clip" title={idDetail}>{idDetail}</p> : null}
         </div>
         <span className={`badge ${badgeClassForTone(entry.tone)}`}>{entry.state}</span>
       </div>
@@ -155,7 +163,7 @@ function ThreadMapCard({ entry }: { entry: ThreadSessionMapEntry }) {
       <dl className="thread-map-details">
         <div>
           <dt>Session</dt>
-          <dd className="mono">{entry.sessions[0] ? sessionLink(entry.sessions[0]) : entry.source.key}</dd>
+          <dd>{entry.sessions[0] ? sessionLink(entry.sessions[0]) : <span className="identity-detail mono">{shortKey(entry.source.key)}</span>}</dd>
         </div>
         <div>
           <dt>Agent</dt>
@@ -188,6 +196,11 @@ function ThreadMapCard({ entry }: { entry: ThreadSessionMapEntry }) {
         {entry.links.task ? <Link to={entry.links.task}>Task detail</Link> : null}
         {entry.links.session ? <Link to={entry.links.session}>Session detail</Link> : null}
         {entry.links.discord ? <a href={entry.links.discord}>Discord</a> : null}
+        {invalidDiscordPermalink ? (
+          <span className="identity-detail" title={entry.source.permalink}>
+            Discord link unavailable: expected an HTTPS discord.com channel permalink.
+          </span>
+        ) : null}
       </div>
     </article>
   );
@@ -203,8 +216,8 @@ function RelationList({ title, sessions }: { title: string; sessions: SessionSum
         <ul>
           {sessions.map((session) => (
             <li key={session.key}>
-              <span className="mono">{sessionLink(session)}</span>
-              {session.label ? <span>{session.label}</span> : null}
+              {sessionLink(session)}
+              <span className="identity-detail mono text-clip">{discordDetail(session.label, session.key)}</span>
             </li>
           ))}
         </ul>
@@ -234,9 +247,18 @@ function TaskList({ tasks }: { tasks: TaskSummary[] }) {
 }
 
 function sourceLine(entry: ThreadSessionMapEntry): string {
-  const channel = entry.source.channelName ? `#${entry.source.channelName}` : entry.parentSession?.label ?? entry.source.channelId ?? "channel binding missing";
-  const thread = entry.source.threadName ?? entry.source.threadId ?? entry.source.label;
-  return `${channel} → ${thread}`;
+  const parentLabel = entry.parentSession
+    ? humanSessionTitle(entry.parentSession.label, entry.parentSession.key)
+    : undefined;
+  const channel = entry.source.channelName
+    ? (entry.source.channelName.startsWith("#") ? entry.source.channelName : `#${entry.source.channelName}`)
+    : parentLabel
+      ?? (entry.source.kind === "channel" ? humanSessionTitle(entry.source.label, entry.source.key) : undefined)
+      ?? "channel binding missing";
+  const thread = entry.source.threadName
+    ?? (entry.source.kind === "thread" ? humanSessionTitle(entry.source.label, entry.source.key) : undefined);
+  if (thread && thread !== channel) return `${channel} → ${thread}`;
+  return channel;
 }
 
 function agentLabel(entry: ThreadSessionMapEntry): string {
@@ -245,7 +267,7 @@ function agentLabel(entry: ThreadSessionMapEntry): string {
 
 function sessionLink(session: SessionSummary) {
   const links = linksFor({ agentId: session.agentId, sessionKey: session.key });
-  const label = shortKey(session.key);
+  const label = humanSessionTitle(session.label, session.key);
   return links.session ? <Link to={links.session}>{label}</Link> : label;
 }
 

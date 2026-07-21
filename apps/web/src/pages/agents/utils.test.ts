@@ -77,6 +77,23 @@ describe("agent session selection", () => {
     const stats = buildAgentStats(runtime, runtime.agents[0]!);
     expect(stats.primarySession?.key).toBe("agent:coder:subagent:newest");
   });
+
+  it("humanizes Discord session labels for the active Now label", () => {
+    const runtime = snapshot();
+    runtime.tasks = [];
+    runtime.sessions = [
+      {
+        key: "agent:coder:discord:channel:1505558029129744436",
+        agentId: "coder",
+        label: "discord:1502628716830916770#evolve-monorepo",
+        isActive: true,
+        updatedAt: "2026-07-13T12:00:00.000Z",
+      },
+    ];
+    const stats = buildAgentStats(runtime, runtime.agents[0]!);
+    expect(stats.currentLabel).toBe("#evolve-monorepo");
+    expect(stats.currentDetail).toContain("discord:1502628716830916770");
+  });
 });
 
 describe("session execution context search", () => {

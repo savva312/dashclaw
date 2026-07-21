@@ -81,6 +81,9 @@ export function AgentOverview() {
                   <div>
                     <strong>{row.agent.name ?? row.agent.id}</strong>
                     <span>{row.currentLabel ?? "Working"}</span>
+                    {row.currentDetail ? (
+                      <span className="identity-detail mono" title={session?.key}>{row.currentDetail}</span>
+                    ) : null}
                     {session ? <ExecutionContext session={session} /> : null}
                   </div>
                   <Badge tone="live" pulse>
