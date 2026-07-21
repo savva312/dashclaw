@@ -48,16 +48,16 @@ describe("dashboard startup authentication", () => {
     (bind) => expect(isLoopbackBind(bind)).toBe(false),
   );
 
-  it("resolves default and configured runtime paths from the workspace root", () => {
+  it("resolves default and configured web assets from the workspace root", () => {
     const root = resolve("test-workspace");
     expect(resolveWorkspacePath(root, undefined, "apps/web/dist")).toBe(
       resolve(root, "apps/web/dist"),
     );
-    expect(resolveWorkspacePath(root, "./runtime/dashclaw.db", "data/dashclaw.db")).toBe(
-      resolve(root, "runtime/dashclaw.db"),
+    expect(resolveWorkspacePath(root, "./public/dashboard", "apps/web/dist")).toBe(
+      resolve(root, "public/dashboard"),
     );
 
-    const absolute = resolve(root, "external/runtime.db");
-    expect(resolveWorkspacePath(root, absolute, "data/dashclaw.db")).toBe(absolute);
+    const absolute = resolve(root, "external/dashboard");
+    expect(resolveWorkspacePath(root, absolute, "apps/web/dist")).toBe(absolute);
   });
 });

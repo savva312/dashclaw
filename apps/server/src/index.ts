@@ -23,11 +23,7 @@ const GATEWAY_URL = process.env.OPENCLAW_GATEWAY_URL ?? "ws://127.0.0.1:18789";
 const GATEWAY_TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN ?? process.env.OPENCLAW_GATEWAY_PASSWORD;
 const ALLOW_INSECURE_REMOTE_GATEWAY = process.env.OPENCLAW_GATEWAY_ALLOW_INSECURE === "1";
 const DASHBOARD_AUTH = resolveDashboardAuth(process.env.DASHCLAW_TOKEN, BIND);
-const DB_PATH = resolveWorkspacePath(
-  WORKSPACE_ROOT,
-  process.env.DASHCLAW_DB,
-  "data/dashclaw.db",
-);
+const DB_PATH = process.env.DASHCLAW_DB ?? join(process.cwd(), "data", "dashclaw.db");
 const USE_FAKE = process.env.DASHCLAW_FAKE_GATEWAY === "1";
 const READ_ONLY = process.env.DASHCLAW_READ_ONLY === "1";
 const FAKE_GATEWAY_SCENARIO = parseFakeGatewayScenario(process.env.DASHCLAW_FAKE_GATEWAY_SCENARIO);
