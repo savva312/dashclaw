@@ -23,6 +23,22 @@ export interface HelloOkPayload {
   };
 }
 
+export type GatewayHandshakeState =
+  | "disconnected"
+  | "connecting"
+  | "challenged"
+  | "authenticated"
+  | "closing";
+
+export interface GatewayWebSocketTransportOptions {
+  maxPayload: number;
+}
+
+export type GatewayWebSocketFactory = (
+  url: string,
+  options: GatewayWebSocketTransportOptions,
+) => WebSocket;
+
 export interface GatewayClientOptions {
   url: string;
   token?: string;
@@ -36,6 +52,10 @@ export interface GatewayClientOptions {
   reconnectDelayMs?: number;
   maxReconnectDelayMs?: number;
   requestTimeoutMs?: number;
+  /** Allow plaintext ws:// for non-loopback hosts. Unsafe; use only on trusted networks. */
+  allowInsecureRemote?: boolean;
+  /** Create a transport with implementation-specific limits (for example ws maxPayload). */
+  webSocketFactory?: GatewayWebSocketFactory;
   /** Inject WebSocket constructor (for tests) */
   WebSocketImpl?: typeof WebSocket;
 }

@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useAppState } from "../context";
 import { executeRpc, requestConfirm } from "../api";
-import { isHighRiskRpc } from "@dashclaw/runtime-model";
+import { isHighRiskRpc, safeOutputString } from "@dashclaw/runtime-model";
+import { safeRawPreview } from "../validation";
 
 const QUICK_ACTIONS = [
   { label: "Refresh health", method: "health", params: {} },
@@ -26,14 +27,14 @@ export function AdminPage() {
       if (isHighRiskRpc(rpcMethod)) {
         const confirmed = window.confirm(`High-risk action: ${rpcMethod}. Continue?`);
         if (!confirmed) return;
-        const c = await requestConfirm(rpcMethod);
+        const c = await requestConfirm(rpcMethod, rpcParams);
         confirmToken = c.confirmToken;
       }
       const res = await executeRpc(rpcMethod, rpcParams, confirmToken);
-      setResult(JSON.stringify(res, null, 2));
+      setResult(safeRawPreview(res));
       await refresh();
     } catch (err) {
-      setResult(err instanceof Error ? err.message : String(err));
+      setResult(safeOutputString(err instanceof Error ? err.message : String(err), 1_000));
     } finally {
       setBusy(false);
     }
@@ -45,7 +46,8 @@ export function AdminPage() {
         <div>
           <h1 className="page-title">Admin Console</h1>
           <p className="page-subtitle">
-            Guarded RPC proxy to the OpenClaw Gateway. High-risk actions require confirmation and are audit-logged.
+            Guarded RPC proxy to the OpenClaw Gateway. High-risk confirmations help prevent accidents; they are not a
+            second authentication factor.
           </p>
         </div>
       </div>

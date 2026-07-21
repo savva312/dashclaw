@@ -1,4 +1,5 @@
 import type { AgentSummary, RuntimeSnapshot, SessionSummary, TaskSummary, TimelineEvent } from "@dashclaw/runtime-model";
+import { humanizeDiscordLabel, humanSessionTitle } from "../../lib/format";
 
 export interface AgentOfficeStats {
   agent: AgentSummary;
@@ -8,6 +9,8 @@ export interface AgentOfficeStats {
   primarySession?: SessionSummary;
   isWorking: boolean;
   currentLabel?: string;
+  /** Muted Discord id / session key hint under the active label. */
+  currentDetail?: string;
   currentTool?: string;
 }
 
@@ -34,6 +37,11 @@ export function buildAgentStats(snapshot: RuntimeSnapshot, agent: AgentSummary):
     : undefined;
   const primarySession = taskSession ?? activeSessions[0];
   const isWorking = activeSessions.length > 0 || Boolean(activeTask);
+  const activeDisplay = activeTask?.title
+    ? { title: activeTask.title, detail: primarySession ? humanizeDiscordLabel(primarySession.label, primarySession.key).detail : undefined }
+    : primarySession
+      ? humanizeDiscordLabel(primarySession.label, primarySession.key)
+      : undefined;
 
   return {
     agent,
@@ -42,11 +50,8 @@ export function buildAgentStats(snapshot: RuntimeSnapshot, agent: AgentSummary):
     activeTask,
     primarySession,
     isWorking,
-    currentLabel:
-      activeTask?.title ??
-      activeTask?.id ??
-      primarySession?.label ??
-      shortSessionKey(primarySession?.key),
+    currentLabel: activeDisplay?.title ?? activeTask?.id ?? shortSessionKey(primarySession?.key),
+    currentDetail: activeDisplay?.detail,
     currentTool: primarySession?.currentTool ?? activeSessions.find((s) => s.currentTool)?.currentTool,
   };
 }
@@ -118,13 +123,17 @@ export function sessionStatusTone(session: SessionSummary): "ok" | "error" | "ne
 export function shortSessionKey(key?: string): string | undefined {
   if (!key) return undefined;
   const parts = key.split(":");
-  if (parts.length >= 5 && parts[2] === "discord") return `discord:${parts[parts.length - 1]?.slice(0, 8)}…`;
+  if (parts.length >= 5 && parts[2] === "discord") {
+    const kind = parts[3];
+    const id = parts[parts.length - 1] ?? "";
+    return `${kind}:${id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : id}`;
+  }
   if (parts.length >= 4) return `${parts[2]}:${parts[3]?.slice(0, 8)}…`;
   return key.length > 42 ? `${key.slice(0, 40)}…` : key;
 }
 
 export function sessionDisplayName(session: SessionSummary): string {
-  return session.label ?? shortSessionKey(session.key) ?? session.key;
+  return humanSessionTitle(session.label, session.key);
 }
 
 export function matchesQuery(text: string, query: string): boolean {

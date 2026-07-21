@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState, type PointerEvent, type WheelEvent } from "react";
 import { Link } from "react-router-dom";
+import { RUNTIME_LIMITS } from "@dashclaw/runtime-model";
 import { useAppState } from "../context";
 import { SessionOperationalBadges, sessionOperationalBadges } from "./agents/SessionOperational";
 import {
@@ -442,6 +443,20 @@ function filterGraph(graph: WorkGraphModel, statusFilter: StatusFilter, query: s
 
   if (statusFilter === "all" && !normalizedQuery) {
     for (const node of graph.nodes) includeIds.add(node.id);
+  }
+
+  if (includeIds.size > RUNTIME_LIMITS.browser.maxRenderedGraphNodes) {
+    const prioritized = graph.nodes
+      .filter((node) => includeIds.has(node.id))
+      .sort((a, b) => Number(isActiveStatus(b.status)) - Number(isActiveStatus(a.status)));
+    includeIds.clear();
+    for (const node of prioritized) {
+      if (includeIds.size >= RUNTIME_LIMITS.browser.maxRenderedGraphNodes) break;
+      includeWithAncestors(node, nodeById, includeIds);
+    }
+    for (const id of [...includeIds].slice(RUNTIME_LIMITS.browser.maxRenderedGraphNodes)) {
+      includeIds.delete(id);
+    }
   }
 
   const cloneById = new Map<string, WorkGraphNode>();

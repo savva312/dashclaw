@@ -1,6 +1,11 @@
 import { expect, test } from "@playwright/test";
+import { loginWithE2EToken } from "./auth";
 
 test.describe("Discord workflow browser smoke", () => {
+  test.beforeEach(async ({ page }) => {
+    await loginWithE2EToken(page);
+  });
+
   test("renders the Command Center with safe action affordances", async ({ page }) => {
     await page.goto("/");
 
@@ -27,6 +32,7 @@ test.describe("Discord workflow browser smoke", () => {
     await expect(page.getByText("Reverse lookup for Discord/source conversations")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Binding metadata gaps" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Open work board" }).first()).toBeVisible();
+    await expect(page.getByRole("link", { name: "Discord", exact: true })).toHaveCount(0);
 
     await page.goto("/graph");
     await expect(page.getByRole("heading", { name: "Work Graph" })).toBeVisible();
@@ -71,6 +77,18 @@ test.describe("Discord workflow browser smoke", () => {
     await expect(pathOnlyContext).not.toContainText("Worktree (reported)");
   });
 
+  test("contains literal-percent route identifiers without crashing", async ({ page }) => {
+    await page.goto("/tasks/literal%25");
+    await expect(page.getByText("Task not found", { exact: true })).toBeVisible();
+
+    await page.goto("/agents/literal%25");
+    await expect(page.getByText("Agent not found", { exact: true })).toBeVisible();
+
+    await page.goto("/agents/literal%25/sessions/session%25key");
+    await expect(page.getByText("Session not found", { exact: true })).toBeVisible();
+    await expect(page.getByText("This page could not be displayed", { exact: true })).toHaveCount(0);
+  });
+
   test("renders one coherent assistant response while tool activity stays separate", async ({ page }) => {
     await page.goto(`/agents/fixture-model/sessions/${encodeURIComponent("agent:dashclaw:discord:thread:work-board:subagent:model")}`);
 
@@ -93,5 +111,22 @@ test.describe("Discord workflow browser smoke", () => {
 
     await page.goto("/tasks/task-lost-background-result");
     await expect(page.getByText("Terminal result unavailable", { exact: true }).first()).toBeVisible();
+  });
+
+  test("keeps the dashboard credential out of request URLs", async ({ page }) => {
+    const requestUrls: string[] = [];
+    page.on("request", (request) => requestUrls.push(request.url()));
+    const eventRequestPromise = page.waitForRequest(
+      (request) => new URL(request.url()).pathname === "/api/events",
+    );
+
+    await page.goto("/");
+    const eventRequest = await eventRequestPromise;
+
+    expect(new URL(eventRequest.url()).search).toBe("");
+    const authorization = eventRequest.headers().authorization;
+    expect(authorization).toMatch(/^Bearer .+$/);
+    const token = authorization.slice("Bearer ".length);
+    expect(requestUrls.every((url) => !url.includes(token) && !url.includes(encodeURIComponent(token)))).toBe(true);
   });
 });

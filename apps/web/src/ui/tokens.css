@@ -1,10 +1,8 @@
 /* Dashclaw Clawdeck — custom ops UI tokens (not a generic component library) */
 
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Sora:wght@400;500;600;700&display=swap");
-
 :root {
-  --font-ui: "Sora", ui-sans-serif, system-ui, sans-serif;
-  --font-data: "IBM Plex Mono", ui-monospace, monospace;
+  --font-ui: ui-sans-serif, system-ui, sans-serif;
+  --font-data: ui-monospace, monospace;
 
   --void: #06080d;
   --void-raised: #0b1018;

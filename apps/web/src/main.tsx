@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { AuthGate } from "./context";
 import { Layout } from "./components/Layout";
+import { RouteErrorBoundary } from "./components/RouteErrorBoundary";
 import { CommandCenterPage } from "./pages/CommandCenter";
 import { TimelinePage } from "./pages/Timeline";
 import { WorkBoardPage } from "./pages/WorkBoard";
@@ -37,26 +38,28 @@ createRoot(document.getElementById("root")!).render(
     <QueryClientProvider client={queryClient}>
       <AuthGate>
         <BrowserRouter>
-          <Routes>
-            <Route element={<Layout />}>
-              <Route index element={<CommandCenterPage />} />
-              <Route path="timeline" element={<TimelinePage />} />
-              <Route path="work" element={<WorkBoardPage />} />
-              <Route path="graph" element={<WorkGraphPage />} />
-              <Route path="map" element={<ThreadMapPage />} />
-              <Route path="agents" element={<AgentOfficeLayout />}>
-                <Route index element={<AgentOverview />} />
-                <Route path=":agentId" element={<AgentSessionsView />} />
-                <Route path=":agentId/sessions/:sessionKey" element={<AgentSessionDetail />} />
+          <RouteErrorBoundary>
+            <Routes>
+              <Route element={<Layout />}>
+                <Route index element={<CommandCenterPage />} />
+                <Route path="timeline" element={<TimelinePage />} />
+                <Route path="work" element={<WorkBoardPage />} />
+                <Route path="graph" element={<WorkGraphPage />} />
+                <Route path="map" element={<ThreadMapPage />} />
+                <Route path="agents" element={<AgentOfficeLayout />}>
+                  <Route index element={<AgentOverview />} />
+                  <Route path=":agentId" element={<AgentSessionsView />} />
+                  <Route path=":agentId/sessions/:sessionKey" element={<AgentSessionDetail />} />
+                </Route>
+                <Route path="sessions" element={<SessionsPage />} />
+                <Route path="cron" element={<CronPage />} />
+                <Route path="tasks" element={<TasksPage />} />
+                <Route path="tasks/:taskId" element={<TaskDetailPage />} />
+                <Route path="approvals" element={<ApprovalsPage />} />
+                <Route path="admin" element={<AdminPage />} />
               </Route>
-              <Route path="sessions" element={<SessionsPage />} />
-              <Route path="cron" element={<CronPage />} />
-              <Route path="tasks" element={<TasksPage />} />
-              <Route path="tasks/:taskId" element={<TaskDetailPage />} />
-              <Route path="approvals" element={<ApprovalsPage />} />
-              <Route path="admin" element={<AdminPage />} />
-            </Route>
-          </Routes>
+            </Routes>
+          </RouteErrorBoundary>
         </BrowserRouter>
       </AuthGate>
     </QueryClientProvider>

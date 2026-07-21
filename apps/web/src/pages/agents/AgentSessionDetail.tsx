@@ -20,9 +20,7 @@ import { Breadcrumb, Button, EmptyState, Panel, SegmentedControl } from "../../u
 type DetailTab = "conversation" | "events";
 
 export function AgentSessionDetail() {
-  const { agentId: rawAgentId, sessionKey: rawSessionKey } = useParams();
-  const agentId = rawAgentId ? decodeURIComponent(rawAgentId) : "";
-  const sessionKey = rawSessionKey ? decodeURIComponent(rawSessionKey) : "";
+  const { agentId = "", sessionKey = "" } = useParams();
   const { snapshot, timeline } = useAppState();
   const [tab, setTab] = useState<DetailTab>("conversation");
   const [copied, setCopied] = useState(false);

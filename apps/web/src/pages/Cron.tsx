@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useAppState } from "../context";
-import { executeRpc, fetchCronRuns } from "../api";
+import { executeRpc, fetchCronRuns, requestConfirm } from "../api";
+import { safeRawPreview } from "../validation";
 
 export function CronPage() {
   const { snapshot, refresh } = useAppState();
@@ -18,7 +19,11 @@ export function CronPage() {
   };
 
   const rerun = async (jobId: string) => {
-    await executeRpc("cron.run", { jobId });
+    const params = { jobId };
+    const confirmed = window.confirm(`Run cron job ${jobId} now?`);
+    if (!confirmed) return;
+    const { confirmToken } = await requestConfirm("cron.run", params);
+    await executeRpc("cron.run", params, confirmToken);
     await refresh();
   };
 
@@ -64,7 +69,7 @@ export function CronPage() {
           {!runs ? (
             <p className="empty">Select a job to view runs</p>
           ) : (
-            <pre className="mono code-preview">{JSON.stringify(runs, null, 2)}</pre>
+            <pre className="mono code-preview">{safeRawPreview(runs)}</pre>
           )}
         </div>
       </div>

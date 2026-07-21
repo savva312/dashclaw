@@ -5,20 +5,7 @@ import { runtimeKeys, RUNTIME_POLL_MS } from "../../queries";
 import { EmptyState, Skeleton } from "../../ui";
 import { formatPreviewText } from "./utils";
 import type { TimelineEvent } from "@dashclaw/runtime-model";
-
-interface PreviewItem {
-  id?: string;
-  role?: string;
-  text?: string;
-}
-
-interface SessionPreviewData {
-  previews?: Array<{
-    key?: string;
-    status?: string;
-    items?: PreviewItem[];
-  }>;
-}
+import type { SessionPreviewItem as PreviewItem } from "../../validation";
 
 export function mergePreviewWithAssistantEvents(
   previewItems: PreviewItem[],
@@ -93,7 +80,7 @@ export function SessionPreviewPanel({
 }) {
   const previewQuery = useQuery({
     queryKey: runtimeKeys.sessionPreview(sessionKey),
-    queryFn: () => fetchSessionPreview(sessionKey) as Promise<SessionPreviewData>,
+    queryFn: () => fetchSessionPreview(sessionKey),
     refetchInterval: isActive ? RUNTIME_POLL_MS : false,
   });
 

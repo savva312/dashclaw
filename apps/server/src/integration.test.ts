@@ -1,8 +1,9 @@
 import { describe, expect, it, afterEach } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { randomUUID } from "node:crypto";
 import { startFakeGateway, type FakeGatewayHandle } from "@dashclaw/openclaw-gateway";
+import type { AdminRpcRequest } from "@dashclaw/runtime-model";
 import { RuntimeStore } from "./runtime-store.js";
 import { GatewayBridge } from "./gateway-bridge.js";
 import { AdminService } from "./admin-service.js";
@@ -11,6 +12,7 @@ describe("server integration", () => {
   let fake: FakeGatewayHandle | null = null;
   let store: RuntimeStore | null = null;
   let bridge: GatewayBridge | null = null;
+  let dataDirectory: string | null = null;
 
   afterEach(async () => {
     if (bridge) await bridge.stop();
@@ -19,11 +21,13 @@ describe("server integration", () => {
     fake = null;
     store?.close();
     store = null;
+    if (dataDirectory) rmSync(dataDirectory, { recursive: true, force: true });
+    dataDirectory = null;
   });
 
   it("builds snapshot from fake gateway", async () => {
     fake = await startFakeGateway({ token: "test-token" });
-    store = new RuntimeStore(join(tmpdir(), `dashclaw-${randomUUID()}.db`));
+    store = new RuntimeStore(createTestDbPath());
 
     bridge = new GatewayBridge({
       url: fake.url,
@@ -41,7 +45,7 @@ describe("server integration", () => {
 
   it("preserves fake gateway degraded state in snapshots", async () => {
     fake = await startFakeGateway({ token: "test-token", scenario: "degraded" });
-    store = new RuntimeStore(join(tmpdir(), `dashclaw-${randomUUID()}.db`));
+    store = new RuntimeStore(createTestDbPath());
 
     bridge = new GatewayBridge({
       url: fake.url,
@@ -57,9 +61,28 @@ describe("server integration", () => {
     expect(degraded.tasks.some((task) => task.id === "task-delivery-lost")).toBe(true);
   });
 
+  it("uses minimal Gateway scopes and blocks writes in read-only mode", async () => {
+    fake = await startFakeGateway({ token: "test-token" });
+    store = new RuntimeStore(createTestDbPath());
+
+    bridge = new GatewayBridge({
+      url: fake.url,
+      token: "test-token",
+      readOnly: true,
+      store,
+    });
+
+    await bridge.start();
+
+    expect(fake.getRequestedScopes()).toEqual(["operator.read"]);
+    await expect(bridge.rpc("sessions.abort", { key: "agent:main:main" })).rejects.toThrow(
+      "Gateway writes are disabled in read-only mode",
+    );
+  });
+
   it("builds snapshot from Discord workflow fake gateway scenario", async () => {
     fake = await startFakeGateway({ token: "test-token", scenario: "discord-workflow" });
-    store = new RuntimeStore(join(tmpdir(), `dashclaw-${randomUUID()}.db`));
+    store = new RuntimeStore(createTestDbPath());
 
     bridge = new GatewayBridge({
       url: fake.url,
@@ -95,7 +118,7 @@ describe("server integration", () => {
 
   it("publishes every session from a fake gateway with more than 100 sessions", async () => {
     fake = await startFakeGateway({ token: "test-token", scenario: "session-pagination" });
-    store = new RuntimeStore(join(tmpdir(), `dashclaw-${randomUUID()}.db`));
+    store = new RuntimeStore(createTestDbPath());
 
     bridge = new GatewayBridge({
       url: fake.url,
@@ -120,7 +143,7 @@ describe("server integration", () => {
 
   it("preserves task contract progress, results, runtime, lineage, and unavailable summaries", async () => {
     fake = await startFakeGateway({ token: "test-token", scenario: "task-contract" });
-    store = new RuntimeStore(join(tmpdir(), `dashclaw-${randomUUID()}.db`));
+    store = new RuntimeStore(createTestDbPath());
     bridge = new GatewayBridge({ url: fake.url, token: "test-token", store });
 
     await bridge.start();
@@ -150,7 +173,7 @@ describe("server integration", () => {
 
   it("audits admin RPC calls", async () => {
     fake = await startFakeGateway({ token: "test-token" });
-    store = new RuntimeStore(join(tmpdir(), `dashclaw-${randomUUID()}.db`));
+    store = new RuntimeStore(createTestDbPath());
 
     bridge = new GatewayBridge({
       url: fake.url,
@@ -168,10 +191,30 @@ describe("server integration", () => {
     expect(admin.validateAuth("Bearer dash-token")).toBe(true);
     expect(admin.validateAuth("Bearer wrong")).toBe(false);
 
-    const result = await admin.executeRpc({ method: "health", actor: "test" });
+    const auth = admin.authenticate("Bearer dash-token");
+    expect(auth?.principal.id).toMatch(/^dashboard-session:/);
+    expect(auth?.sessionToken).toBeTruthy();
+    const resumed = admin.authenticate("Bearer dash-token", auth?.sessionToken);
+    expect(resumed?.principal).toEqual(auth?.principal);
+
+    const forgedRequest = {
+      method: "health",
+      actor: "forged-human-identity",
+    } as unknown as AdminRpcRequest;
+    const result = await admin.executeRpc(auth!.principal, forgedRequest);
     expect(result.ok).toBe(true);
 
     const audit = store.listAudit(10);
-    expect(audit.some((e) => e.method === "health" && e.success)).toBe(true);
+    expect(audit).toContainEqual(expect.objectContaining({
+      method: "health",
+      success: true,
+      actor: auth?.principal.id,
+    }));
+    expect(audit.some((entry) => entry.actor === "forged-human-identity")).toBe(false);
   });
+
+  function createTestDbPath(): string {
+    dataDirectory = mkdtempSync(join(tmpdir(), "dashclaw-integration-"));
+    return join(dataDirectory, "runtime.db");
+  }
 });

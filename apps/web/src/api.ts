@@ -3,10 +3,23 @@ import type {
   RuntimeSnapshot,
   TimelineEvent,
 } from "@dashclaw/runtime-model";
+import { RUNTIME_LIMITS, safeOutputString } from "@dashclaw/runtime-model";
+import {
+  parseAuditResponse,
+  parseBoundedJsonText,
+  parseConfirmation,
+  parseCronRuns,
+  parseRpcResult,
+  parseSessionPreview,
+  parseSnapshot,
+  parseSseAudit,
+  parseSseSnapshot,
+  parseSseTimeline,
+  parseTimelineResponse,
+  type SessionPreviewData,
+} from "./validation";
 
 const TOKEN_KEY = "dashclaw_token";
-const IGNORE_ENV_KEY = "dashclaw_ignore_env_token";
-const ENV_TOKEN = import.meta.env.VITE_DASHCLAW_TOKEN ?? import.meta.env.DASHCLAW_TOKEN ?? "";
 
 export class AuthError extends Error {
   constructor(message = "Unauthorized") {
@@ -28,37 +41,27 @@ function notifyUnauthorized(): void {
   unauthorizedHandler?.();
 }
 
-export function getEnvToken(): string {
-  return ENV_TOKEN;
-}
-
-export function shouldUseEnvToken(): boolean {
-  if (sessionStorage.getItem(IGNORE_ENV_KEY) === "1") return false;
-  return Boolean(ENV_TOKEN);
-}
-
 export function getToken(): string {
-  const stored = sessionStorage.getItem(TOKEN_KEY);
-  if (stored) return stored;
-  if (shouldUseEnvToken()) return ENV_TOKEN;
-  return "";
+  return sessionStorage.getItem(TOKEN_KEY) ?? "";
 }
 
 export function setToken(token: string): void {
   sessionStorage.setItem(TOKEN_KEY, token);
-  sessionStorage.removeItem(IGNORE_ENV_KEY);
 }
 
 export function clearToken(): void {
   sessionStorage.removeItem(TOKEN_KEY);
-  sessionStorage.setItem(IGNORE_ENV_KEY, "1");
 }
 
 export function isAuthError(err: unknown): boolean {
   return err instanceof AuthError || (err instanceof Error && err.message === "Unauthorized");
 }
 
-async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function apiFetch<T>(
+  path: string,
+  init: RequestInit,
+  validate: (value: unknown) => T,
+): Promise<T> {
   const token = getToken();
   const res = await fetch(path, {
     ...init,
@@ -72,45 +75,90 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
     notifyUnauthorized();
     throw new AuthError();
   }
+  const body = await readBoundedResponse(res);
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error((body as { error?: string }).error ?? res.statusText);
+    const error = body && typeof body === "object" && !Array.isArray(body)
+      ? (body as { error?: unknown }).error
+      : undefined;
+    throw new Error(
+      typeof error === "string"
+        ? safeOutputString(error, 500)
+        : res.statusText,
+    );
   }
-  return res.json() as Promise<T>;
+  return validate(body);
+}
+
+async function readBoundedResponse(response: Response): Promise<unknown> {
+  const declaredLength = Number(response.headers.get("Content-Length"));
+  if (
+    Number.isFinite(declaredLength) &&
+    declaredLength > RUNTIME_LIMITS.browser.maxApiResponseBytes
+  ) {
+    await response.body?.cancel();
+    throw new Error("API response exceeds byte limit");
+  }
+
+  if (!response.body) {
+    return parseBoundedJsonText(await response.text(), "API response");
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > RUNTIME_LIMITS.browser.maxApiResponseBytes) {
+      await reader.cancel();
+      throw new Error("API response exceeds byte limit");
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return parseBoundedJsonText(new TextDecoder().decode(bytes), "API response");
 }
 
 export async function fetchSnapshot(): Promise<RuntimeSnapshot> {
-  return apiFetch("/api/snapshot");
+  return apiFetch("/api/snapshot", {}, parseSnapshot);
 }
 
 export async function fetchTimeline(limit = 200): Promise<TimelineEvent[]> {
-  const data = await apiFetch<{ events: TimelineEvent[] }>(`/api/timeline?limit=${limit}`);
-  return data.events;
+  return apiFetch(`/api/timeline?limit=${limit}`, {}, parseTimelineResponse);
 }
 
 export async function fetchAudit(): Promise<AuditLogEntry[]> {
-  const data = await apiFetch<{ entries: AuditLogEntry[] }>("/api/audit");
-  return data.entries;
+  return apiFetch("/api/audit", {}, parseAuditResponse);
 }
 
 export async function refreshGateway(): Promise<RuntimeSnapshot> {
-  return apiFetch("/api/gateway/refresh", { method: "POST" });
+  return apiFetch("/api/gateway/refresh", { method: "POST" }, parseSnapshot);
 }
 
-export async function fetchSessionPreview(key: string): Promise<unknown> {
-  return apiFetch(`/api/sessions/${encodeURIComponent(key)}/preview`);
+export async function fetchSessionPreview(key: string): Promise<SessionPreviewData> {
+  return apiFetch(`/api/sessions/${encodeURIComponent(key)}/preview`, {}, parseSessionPreview);
 }
 
 export async function fetchCronRuns(jobId?: string): Promise<unknown> {
   const q = jobId ? `?jobId=${encodeURIComponent(jobId)}` : "";
-  return apiFetch(`/api/cron/runs${q}`);
+  return apiFetch(`/api/cron/runs${q}`, {}, parseCronRuns);
 }
 
-export async function requestConfirm(method: string): Promise<{ confirmToken: string }> {
+export async function requestConfirm(
+  method: string,
+  params?: Record<string, unknown>,
+): Promise<{ confirmToken: string }> {
   return apiFetch("/api/admin/confirm", {
     method: "POST",
-    body: JSON.stringify({ method }),
-  });
+    body: JSON.stringify({ method, params }),
+  }, parseConfirmation);
 }
 
 export async function executeRpc(
@@ -120,35 +168,212 @@ export async function executeRpc(
 ): Promise<{ ok: boolean; result?: unknown; error?: string }> {
   return apiFetch("/api/admin/rpc", {
     method: "POST",
-    body: JSON.stringify({ method, params, confirmToken, actor: "dashclaw-ui" }),
-  });
+    body: JSON.stringify({ method, params, confirmToken }),
+  }, parseRpcResult);
 }
 
-export function subscribeEvents(handlers: {
+export const MAX_SSE_EVENT_CHARS = RUNTIME_LIMITS.browser.maxSseEventBytes;
+const INITIAL_SSE_RECONNECT_MS = 1_000;
+const MAX_SSE_RECONNECT_MS = 30_000;
+
+type EventHandlers = {
   onSnapshot?: (s: RuntimeSnapshot) => void;
   onTimeline?: (e: TimelineEvent) => void;
   onAudit?: (entries: AuditLogEntry[]) => void;
-}): () => void {
+};
+
+type ParsedSseEvent = {
+  event: string;
+  data: string;
+};
+
+function dispatchSseEvent({ event, data }: ParsedSseEvent, handlers: EventHandlers): void {
+  try {
+    if (event === "snapshot") {
+      handlers.onSnapshot?.(parseSseSnapshot(data));
+    } else if (event === "timeline") {
+      handlers.onTimeline?.(parseSseTimeline(data));
+    } else if (event === "audit") {
+      handlers.onAudit?.(parseSseAudit(data));
+    }
+  } catch {
+    // Malformed or excessive events are ignored; polling remains authoritative.
+  }
+}
+
+async function consumeEventStream(
+  body: ReadableStream<Uint8Array>,
+  signal: AbortSignal,
+  onEvent: (event: ParsedSseEvent) => void,
+  onRetry: (delayMs: number) => void,
+): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let eventName = "";
+  let dataLines: string[] = [];
+  let dataChars = 0;
+
+  const resetEvent = () => {
+    eventName = "";
+    dataLines = [];
+    dataChars = 0;
+  };
+
+  const dispatch = () => {
+    if (dataLines.length === 0) {
+      resetEvent();
+      return;
+    }
+    const event = { event: eventName || "message", data: dataLines.join("\n") };
+    resetEvent();
+    onEvent(event);
+  };
+
+  const processLine = (line: string) => {
+    if (line.length > MAX_SSE_EVENT_CHARS) {
+      throw new Error("SSE line exceeded the configured size limit");
+    }
+    if (line === "") {
+      dispatch();
+      return;
+    }
+    if (line.startsWith(":")) return;
+
+    const colon = line.indexOf(":");
+    const field = colon === -1 ? line : line.slice(0, colon);
+    let value = colon === -1 ? "" : line.slice(colon + 1);
+    if (value.startsWith(" ")) value = value.slice(1);
+
+    if (field === "event") {
+      eventName = value;
+    } else if (field === "data") {
+      dataChars += value.length + (dataLines.length > 0 ? 1 : 0);
+      if (dataChars > MAX_SSE_EVENT_CHARS) {
+        throw new Error("SSE event exceeded the configured size limit");
+      }
+      dataLines.push(value);
+    } else if (field === "retry" && /^\d+$/.test(value)) {
+      const parsed = Number(value);
+      if (Number.isSafeInteger(parsed)) {
+        onRetry(Math.min(MAX_SSE_RECONNECT_MS, Math.max(INITIAL_SSE_RECONNECT_MS, parsed)));
+      }
+    }
+  };
+
+  const drainLines = (atEnd: boolean) => {
+    while (buffer.length > 0) {
+      const lf = buffer.indexOf("\n");
+      const cr = buffer.indexOf("\r");
+      const lineEnd = lf === -1 ? cr : cr === -1 ? lf : Math.min(lf, cr);
+      if (lineEnd === -1) break;
+      if (!atEnd && buffer[lineEnd] === "\r" && lineEnd === buffer.length - 1) break;
+
+      const isCrLf = buffer[lineEnd] === "\r" && buffer[lineEnd + 1] === "\n";
+      const line = buffer.slice(0, lineEnd);
+      buffer = buffer.slice(lineEnd + (isCrLf ? 2 : 1));
+      processLine(line);
+    }
+
+    if (buffer.length > MAX_SSE_EVENT_CHARS) {
+      throw new Error("SSE buffer exceeded the configured size limit");
+    }
+    if (atEnd && buffer.length > 0) {
+      const finalLine = buffer;
+      buffer = "";
+      processLine(finalLine);
+    }
+  };
+
+  const cancelReader = () => {
+    void reader.cancel().catch(() => {});
+  };
+  signal.addEventListener("abort", cancelReader, { once: true });
+
+  try {
+    while (!signal.aborted) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      drainLines(false);
+    }
+
+    if (!signal.aborted) {
+      buffer += decoder.decode();
+      drainLines(true);
+      dispatch();
+    }
+  } finally {
+    signal.removeEventListener("abort", cancelReader);
+    reader.releaseLock();
+  }
+}
+
+export function subscribeEvents(handlers: EventHandlers): () => void {
   const token = getToken();
   if (!token) {
     return () => {};
   }
 
-  const es = new EventSource(`/api/events?token=${encodeURIComponent(token)}`);
+  const controller = new AbortController();
+  let stopped = false;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let reconnectDelay = INITIAL_SSE_RECONNECT_MS;
 
-  es.addEventListener("snapshot", (ev) => {
-    handlers.onSnapshot?.(JSON.parse(ev.data) as RuntimeSnapshot);
-  });
-  es.addEventListener("timeline", (ev) => {
-    handlers.onTimeline?.(JSON.parse(ev.data) as TimelineEvent);
-  });
-  es.addEventListener("audit", (ev) => {
-    handlers.onAudit?.(JSON.parse(ev.data) as AuditLogEntry[]);
-  });
+  const connect = async (): Promise<void> => {
+    try {
+      const response = await fetch("/api/events", {
+        method: "GET",
+        headers: {
+          Accept: "text/event-stream",
+          Authorization: `Bearer ${token}`,
+        },
+        cache: "no-store",
+        signal: controller.signal,
+      });
 
-  es.onerror = () => {
-    // Transient SSE disconnects are handled by polling; avoid false logouts here.
+      if (response.status === 401) {
+        stopped = true;
+        notifyUnauthorized();
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(`Event stream request failed with status ${response.status}`);
+      }
+      if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("text/event-stream")) {
+        throw new Error("Event stream returned an invalid content type");
+      }
+      if (!response.body) {
+        throw new Error("Event stream returned no response body");
+      }
+
+      reconnectDelay = INITIAL_SSE_RECONNECT_MS;
+      await consumeEventStream(
+        response.body,
+        controller.signal,
+        (event) => dispatchSseEvent(event, handlers),
+        (delayMs) => {
+          reconnectDelay = delayMs;
+        },
+      );
+    } catch {
+      // Polling remains active while transient stream failures reconnect.
+    }
+
+    if (stopped || controller.signal.aborted) return;
+    const delay = reconnectDelay;
+    reconnectDelay = Math.min(MAX_SSE_RECONNECT_MS, reconnectDelay * 2);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = undefined;
+      void connect();
+    }, delay);
   };
 
-  return () => es.close();
+  void connect();
+
+  return () => {
+    stopped = true;
+    if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
+    controller.abort();
+  };
 }

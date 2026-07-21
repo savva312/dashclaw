@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useAppState } from "../context";
 import { fetchSessionPreview } from "../api";
-import { formatCompactTitle } from "../lib/format";
+import { discordDetail, humanSessionTitle } from "../lib/format";
+import { safeRawPreview } from "../validation";
 import { ExecutionContext } from "./agents/ExecutionContext";
 
 export function SessionsPage() {
@@ -45,7 +46,9 @@ export function SessionsPage() {
                 <tr><th>Session</th><th>Agent</th><th>Status</th><th>Execution context</th></tr>
               </thead>
               <tbody>
-                {sessions.map((s) => (
+                {sessions.map((s) => {
+                  const detail = discordDetail(s.label, s.key);
+                  return (
                   <tr
                     key={s.key}
                     className={selected === s.key ? "table-row-selected" : undefined}
@@ -53,7 +56,8 @@ export function SessionsPage() {
                     onClick={() => void loadPreview(s.key)}
                   >
                     <td className="cell-clip">
-                      <span className="text-clip" title={s.label ?? s.key}>{formatCompactTitle(s.label ?? s.key, 48)}</span>
+                      <span className="text-clip" title={s.label ?? s.key}>{humanSessionTitle(s.label, s.key, 48)}</span>
+                      {detail ? <div className="identity-detail mono text-clip">{detail}</div> : null}
                     </td>
                     <td className="text-clip">{s.agentId ?? "—"}</td>
                     <td>
@@ -63,7 +67,8 @@ export function SessionsPage() {
                     </td>
                     <td><ExecutionContext session={s} /></td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -75,7 +80,7 @@ export function SessionsPage() {
           ) : loading ? (
             <p>Loading…</p>
           ) : (
-            <pre className="mono code-preview">{JSON.stringify(preview, null, 2)}</pre>
+            <pre className="mono code-preview">{safeRawPreview(preview)}</pre>
           )}
         </div>
       </div>

@@ -38,8 +38,8 @@ export function SessionCard({
       </div>
 
       <h3 className="session-card-title">{sessionDisplayName(session)}</h3>
-      <p className="session-card-key mono" title={session.key}>
-        {session.label ? shortSessionKey(session.key) : session.key}
+      <p className="session-card-key mono identity-detail" title={session.key}>
+        {shortSessionKey(session.key) ?? session.key}
       </p>
 
       {session.currentTool ? (

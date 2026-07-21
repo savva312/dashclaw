@@ -9,7 +9,7 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "lint": "echo ok"
+    "lint": "eslint src --max-warnings 0"
   },
   "dependencies": {
     "@dashclaw/openclaw-gateway": "workspace:*",

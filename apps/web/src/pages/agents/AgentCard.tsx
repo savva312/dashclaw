@@ -27,6 +27,9 @@ export function AgentCard({ stats }: { stats: AgentOfficeStats }) {
           <div className="agent-card-activity">
             <span className="agent-card-activity-label">Now</span>
             <strong>{stats.currentLabel ?? "Active run"}</strong>
+            {stats.currentDetail ? (
+              <span className="identity-detail mono" title={stats.primarySession?.key}>{stats.currentDetail}</span>
+            ) : null}
             {stats.currentTool ? <span className="mono agent-card-tool">↳ {stats.currentTool}</span> : null}
             {stats.primarySession ? <ExecutionContext session={stats.primarySession} /> : null}
           </div>
