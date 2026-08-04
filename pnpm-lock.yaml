@@ -34,7 +34,7 @@ importers:
         version: link:../../packages/runtime-model
       '@hono/node-server':
         specifier: ^1.14.1
-        version: 1.19.14(hono@4.12.26)
+        version: 1.19.14(hono@4.12.34)
       better-sqlite3:
         specifier: ^11.8.1
         version: 11.10.0
@@ -43,7 +43,7 @@ importers:
         version: 16.6.1
       hono:
         specifier: ^4.7.4
-        version: 4.12.26
+        version: 4.12.34
     devDependencies:
       '@types/better-sqlite3':
         specifier: ^7.6.12
@@ -1199,8 +1199,8 @@ packages:
     resolution: {integrity: sha512-EykJT/Q1KjTWctppgIAgfSO0tKVuZUjhgMr17kqTumMl6Afv3EISleU7qZUzoXDFTAHTDC4NOoG/ZxU3EvlMPQ==}
     engines: {node: '>=8'}
 
-  hono@4.12.26:
-    resolution: {integrity: sha512-uyZtpnYxM9CmQ7QsQknM4zN8EftNqhON1qYeIKM0Se67CCEe2c44xyGURwB0axX2fBDu1dqHrHAc1hmNT8ITkw==}
+  hono@4.12.34:
+    resolution: {integrity: sha512-GqXJqY/xJkJmuloTrnV1ZEXG3fqte+VjkUqoRNZXcrUidiUOP4fMSIHHY4tsqZBK++kVyWmt/AAfSUuy57/eSA==}
     engines: {node: '>=16.9.0'}
 
   ieee754@1.2.1:
@@ -2011,9 +2011,9 @@ snapshots:
       '@eslint/core': 0.17.0
       levn: 0.4.1
 
-  '@hono/node-server@1.19.14(hono@4.12.26)':
+  '@hono/node-server@1.19.14(hono@4.12.34)':
     dependencies:
-      hono: 4.12.26
+      hono: 4.12.34
 
   '@humanfs/core@0.19.2':
     dependencies:
@@ -2658,7 +2658,7 @@ snapshots:
 
   has-flag@4.0.0: {}
 
-  hono@4.12.26: {}
+  hono@4.12.34: {}
 
   ieee754@1.2.1: {}
 
