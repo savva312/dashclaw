@@ -34,6 +34,6 @@
     "@playwright/test": "^1.61.1",
     "eslint": "9.39.5",
     "globals": "16.4.0",
-    "typescript-eslint": "8.65.0"
+    "typescript-eslint": "8.71.0"
   }
 }
